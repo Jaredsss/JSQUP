@@ -89,6 +89,12 @@ db.execute(
 db.execute("create table if not exists house(id integer primary key, balance integer not null default 0)")
 db.execute("insert or ignore into house(id, balance) values(1, 0)")
 db.execute(
+    "create table if not exists bets("
+    "id integer primary key autoincrement, user_id integer, game text, stake integer, payout integer, created integer)"
+)
+db.execute("create index if not exists bets_user on bets(user_id)")
+db.execute("create table if not exists settings(key text primary key, value text)")
+db.execute(
     "create table if not exists channels("
     "id integer primary key autoincrement, chat text unique, title text, url text, created integer)"
 )
@@ -97,6 +103,69 @@ db.execute(
     "id integer primary key autoincrement, admin_id integer, user_id integer, delta integer, reason text, created integer)"
 )
 db.commit()
+
+
+# Настройки игр, меняются из админки. Доли: 0.06 = 6 %
+SETTING_LIMITS = {
+    "upg_edge": (0.0, 0.2),
+    "mines_edge": (0.0, 0.2),
+    "crash_edge": (0.0, 0.2),
+    "arena_fee": (0.0, 0.2),
+    "max_bet": (1, MAX_BET),
+    "mines_max_bet": (1, MAX_BET),
+    "max_win": (0, 100_000_000),
+}
+settings = {
+    "upg_edge": UPG_EDGE,
+    "mines_edge": MINES_EDGE,
+    "crash_edge": CRASH_EDGE,
+    "arena_fee": ARENA_FEE_PERCENT / 100,
+    "max_bet": MAX_BET,
+    "mines_max_bet": MINES_MAX_BET,
+    "max_win": 0,
+}
+for _key, _value in db.execute("select key, value from settings").fetchall():
+    if _key in settings:
+        settings[_key] = float(_value) if _key.endswith(("_edge", "_fee")) else int(float(_value))
+
+
+def save_settings(values):
+    for key, value in values.items():
+        settings[key] = value
+        db.execute(
+            "insert into settings(key, value) values(?, ?) on conflict(key) do update set value = excluded.value",
+            (key, str(value)),
+        )
+    db.commit()
+
+
+def cap_win(payout, max_win):
+    return min(payout, max_win) if max_win else payout
+
+
+def log_bet(uid, game, stake, payout):
+    db.execute(
+        "insert into bets(user_id, game, stake, payout, created) values(?, ?, ?, ?, ?)",
+        (uid, game, stake, payout, int(time.time())),
+    )
+    db.commit()
+
+
+def player_stats(uid):
+    def one(sql):
+        return db.execute(sql, (uid,)).fetchone()[0]
+
+    wagered = one("select coalesce(sum(stake), 0) from bets where user_id = ?")
+    won = one("select coalesce(sum(payout), 0) from bets where user_id = ?")
+    return {
+        "deposited": one("select coalesce(sum(amount), 0) from charges where user_id = ?"),
+        "granted": one("select coalesce(sum(delta), 0) from admin_log where user_id = ?"),
+        "withdrawn": one("select coalesce(sum(amount), 0) from withdraw_requests where user_id = ? and status = 'paid'"),
+        "bets": one("select count(*) from bets where user_id = ?"),
+        "wagered": wagered,
+        "won": won,
+        "net": won - wagered,
+    }
 
 
 def upsert_user(uid, name, username):
@@ -256,7 +325,7 @@ def parse_amount(value):
         amount = int(value)
     except (TypeError, ValueError):
         return None
-    if amount < 1 or amount > MAX_BET:
+    if amount < 1 or amount > settings["max_bet"]:
         return None
     return amount
 
@@ -355,7 +424,10 @@ async def handle_me(request):
             "max": MAX_TOPUP,
             "min_withdraw": MIN_WITHDRAW,
             "pending_withdraw": pending_withdraw(uid),
-            "upg_edge": UPG_EDGE,
+            "upg_edge": settings["upg_edge"],
+            "mines_max_bet": settings["mines_max_bet"],
+            "max_bet": settings["max_bet"],
+            "max_win": settings["max_win"],
             "is_admin": is_admin(uid),
             "subs": await missing_subs(request.app["session"], uid),
         }
@@ -489,20 +561,27 @@ async def handle_upgrader(request):
         chance = int(d.get("chance"))
     except (TypeError, ValueError):
         chance = 0
-    if amount is None or chance < 1 or chance > 80:
+    if amount is None:
+        return jerr(f"Ставка от 1 до {settings['max_bet']}")
+    if chance < 1 or chance > 80:
         return jerr("Неверные параметры")
-    
+    edge = settings["upg_edge"]
+    potential = int(amount * 100 * (1 - edge) / chance)
+    if settings["max_win"] and potential > settings["max_win"]:
+        return jerr(f"Максимальный выигрыш за ставку — {settings['max_win']}. Уменьши ставку или увеличь шанс")
+
     roll = rng.random() * 100
     win = roll < chance
-    payout = int(amount * 100 * (1 - UPG_EDGE) / chance) if win else 0
+    payout = potential if win else 0
     if not play(user["id"], amount, payout):
         return jerr("Не хватает звёзд")
-    return web.json_response({"ok": True, "win": win, "roll": roll, "payout": payout, "balance": get_balance(user["id"])})
+    log_bet(user["id"], "upgrader", amount, payout)
+    return web.json_response({"ok": True, "win": win, "roll": roll, "payout": payout, "edge": edge, "balance": get_balance(user["id"])})
 
 
 active_mines = {}
 
-def calc_mines_mult(opened, total_mines):
+def calc_mines_mult(opened, total_mines, edge):
     if opened <= 0:
         return 1.0
     max_safe = 25 - total_mines
@@ -514,7 +593,11 @@ def calc_mines_mult(opened, total_mines):
         if denominator <= 0:
             denominator = 1
         mult *= (25.0 - i) / denominator
-    return round(max(1.0, mult * (1 - MINES_EDGE)), 2)
+    return round(max(1.0, mult * (1 - edge)), 2)
+
+
+def mines_payout(game, opened):
+    return cap_win(int(game["amount"] * calc_mines_mult(opened, game["mines_count"], game["edge"])), game["max_win"])
 
 
 def finish_mines(uid):
@@ -523,7 +606,8 @@ def finish_mines(uid):
     if not game:
         return
     if game["opened_cells"]:
-        payout = int(game["amount"] * calc_mines_mult(len(game["opened_cells"]), game["mines_count"]))
+        payout = mines_payout(game, len(game["opened_cells"]))
+        log_bet(uid, "mines", game["amount"], payout)
     else:
         payout = game["amount"]
     settle([game["hold_id"]], [(uid, payout)])
@@ -542,8 +626,8 @@ async def handle_mines_start(request):
     except (TypeError, ValueError):
         mines_count = 3
     
-    if amount is None or amount > MINES_MAX_BET or mines_count < 1 or mines_count > 24:
-        return jerr(f"Максимальная ставка в минах — {MINES_MAX_BET} звёзд")
+    if amount is None or amount > settings["mines_max_bet"] or mines_count < 1 or mines_count > 24:
+        return jerr(f"Ставка в минах от 1 до {settings['mines_max_bet']} звёзд")
     
     uid = user["id"]
     finish_mines(uid)
@@ -559,14 +643,17 @@ async def handle_mines_start(request):
         "mines_count": mines_count,
         "mines_list": mines_list,
         "opened_cells": [],
-        "hold_id": hold_id
+        "hold_id": hold_id,
+        "edge": settings["mines_edge"],
+        "max_win": settings["max_win"],
     }
-    
+
     return web.json_response({
         "ok": True,
         "balance": get_balance(uid),
         "mult": 1.0,
-        "next_mult": calc_mines_mult(1, mines_count)
+        "next_mult": calc_mines_mult(1, mines_count, settings["mines_edge"]),
+        "max_win": settings["max_win"],
     })
 
 async def handle_mines_step(request):
@@ -591,6 +678,7 @@ async def handle_mines_step(request):
 
     if hit_mine:
         hold_id = game["hold_id"]
+        log_bet(uid, "mines", game["amount"], 0)
         settle([hold_id])
         mines = game["mines_list"]
         opened = game["opened_cells"]
@@ -607,18 +695,20 @@ async def handle_mines_step(request):
         opened_count = len(game["opened_cells"])
         max_safe = 25 - game["mines_count"]
         
-        curr_mult = calc_mines_mult(opened_count, game["mines_count"])
-        next_mult = calc_mines_mult(opened_count + 1, game["mines_count"]) if opened_count < max_safe else curr_mult
-        
-        if opened_count >= max_safe:
-            payout = int(game["amount"] * curr_mult)
-            hold_id = game["hold_id"]
-            settle([hold_id], [(uid, payout)])
+        curr_mult = calc_mines_mult(opened_count, game["mines_count"], game["edge"])
+        next_mult = calc_mines_mult(opened_count + 1, game["mines_count"], game["edge"]) if opened_count < max_safe else curr_mult
+        payout = mines_payout(game, opened_count)
+        capped = bool(game["max_win"]) and payout >= game["max_win"]
+
+        if opened_count >= max_safe or capped:
+            log_bet(uid, "mines", game["amount"], payout)
+            settle([game["hold_id"]], [(uid, payout)])
             del active_mines[uid]
             return web.json_response({
                 "ok": True,
                 "game_over": False,
                 "won": True,
+                "capped": capped,
                 "payout": payout,
                 "mult": curr_mult,
                 "balance": get_balance(uid)
@@ -644,10 +734,8 @@ async def handle_mines_cashout(request):
     if not game["opened_cells"]:
         return jerr("Откройте хотя бы одну ячейку")
         
-    opened_count = len(game["opened_cells"])
-    curr_mult = calc_mines_mult(opened_count, game["mines_count"])
-    payout = int(game["amount"] * curr_mult)
-    
+    payout = mines_payout(game, len(game["opened_cells"]))
+    log_bet(uid, "mines", game["amount"], payout)
     settle([game["hold_id"]], [(uid, payout)])
     del active_mines[uid]
     
@@ -658,28 +746,53 @@ async def handle_mines_cashout(request):
     })
 
 
-crash = {"round": 0, "phase": "waiting", "wait_until": 0.0, "started": 0.0, "crash_point": 1.0, "crash_ms": 0.0, "bets": {}, "history": []}
+crash = {"round": 0, "phase": "waiting", "wait_until": 0.0, "started": 0.0, "crash_point": 1.0, "crash_ms": 0.0, "bets": {}, "history": [], "max_win": 0}
 arena = {"round": 0, "phase": "idle", "deadline": 0.0, "bets": {}, "winner": None, "seed": 0, "play_start": 0.0, "finish": 0.0, "last": None}
 
 def gen_crash_point():
     r = rng.random()
-    point = (1.0 - CRASH_EDGE) / (1.0 - r)
+    point = (1.0 - settings["crash_edge"]) / (1.0 - r)
     return max(1.0, min(CRASH_MAX, math.floor(point * 100) / 100))
 
 async def crash_loop():
     while True:
         point = gen_crash_point()
-        crash.update(round=crash["round"] + 1, phase="waiting", wait_until=time.time() + CRASH_WAIT, crash_point=point, crash_ms=math.log(point) / CRASH_K * 1000.0, bets={})
+        crash.update(round=crash["round"] + 1, phase="waiting", wait_until=time.time() + CRASH_WAIT, crash_point=point, crash_ms=math.log(point) / CRASH_K * 1000.0, bets={}, max_win=settings["max_win"])
         await asyncio.sleep(CRASH_WAIT)
         crash["phase"] = "running"
         crash["started"] = time.time()
-        await asyncio.sleep(crash["crash_ms"] / 1000.0)
+        while True:
+            elapsed_ms = (time.time() - crash["started"]) * 1000.0
+            if elapsed_ms >= crash["crash_ms"]:
+                break
+            if crash["max_win"]:
+                crash_autocash(elapsed_ms)
+            await asyncio.sleep(min(0.1, (crash["crash_ms"] - elapsed_ms) / 1000.0))
         crash["phase"] = "crashed"
-        lost = [b["hold"] for b in crash["bets"].values() if b["cashed"] is None]
-        settle(lost)
+        lost = [(uid, b) for uid, b in crash["bets"].items() if b["cashed"] is None]
+        for uid, b in lost:
+            log_bet(uid, "crash", b["amount"], 0)
+        settle([b["hold"] for _, b in lost])
         crash["history"].insert(0, point)
         del crash["history"][14:]
         await asyncio.sleep(CRASH_SHOW)
+
+def crash_cash(uid, b, m100):
+    payout = cap_win(b["amount"] * m100 // 100, crash["max_win"])
+    log_bet(uid, "crash", b["amount"], payout)
+    settle([b["hold"]], [(uid, payout)])
+    b["cashed"] = m100 / 100.0
+    b["payout"] = payout
+    return payout
+
+
+def crash_autocash(elapsed_ms):
+    # Лимит выигрыша: ставка забирается автоматически, как только выплата его достигает
+    m100 = math.floor(math.exp(CRASH_K * elapsed_ms / 1000.0) * 100)
+    for uid, b in crash["bets"].items():
+        if b["cashed"] is None and b["amount"] * m100 // 100 >= crash["max_win"]:
+            crash_cash(uid, b, m100)
+
 
 async def handle_crash_state(request):
     user = require(request)
@@ -689,7 +802,7 @@ async def handle_crash_state(request):
     now = time.time()
     my = c["bets"].get(user["id"])
     out = {
-        "ok": True, "round": c["round"], "phase": c["phase"], "k": CRASH_K,
+        "ok": True, "round": c["round"], "phase": c["phase"], "k": CRASH_K, "max_win": c["max_win"],
         "history": c["history"][:12], "balance": get_balance(user["id"]),
         "players": [{"name": b["name"], "amount": b["amount"], "cashed": b["cashed"], "payout": b["payout"], "me": uid == user["id"]} for uid, b in list(c["bets"].items())[:30]],
         "pot": sum(b["amount"] for b in c["bets"].values()),
@@ -741,10 +854,7 @@ async def handle_crash_cashout(request):
     if elapsed_ms >= c["crash_ms"]:
         return jerr("Ракета взорвалась")
     m100 = min(int(round(c["crash_point"] * 100)), math.floor(math.exp(CRASH_K * elapsed_ms / 1000.0) * 100))
-    payout = b["amount"] * m100 // 100
-    settle([b["hold"]], [(uid, payout)])
-    b["cashed"] = m100 / 100.0
-    b["payout"] = payout
+    payout = crash_cash(uid, b, m100)
     return web.json_response({"ok": True, "payout": payout, "mult": m100 / 100.0, "balance": get_balance(uid)})
 
 def arena_reset():
@@ -786,9 +896,11 @@ def arena_step():
     elif phase == "playing" and now >= a["play_start"] + ARENA_PLAY:
         bets = a["bets"]
         pot = sum(b["amount"] for b in bets.values())
-        fee = pot * ARENA_FEE_PERCENT // 100
+        fee = int(pot * settings["arena_fee"])
         payout = pot - fee
         holds = [h for b in bets.values() for h in b["holds"]]
+        for uid, b in bets.items():
+            log_bet(uid, "arena", b["amount"], payout if uid == a["winner"] else 0)
         settle(holds, [(a["winner"], payout)], fee)
         a["last"] = {"round": a["round"], "players": list(bets.keys()), "refunded": False, "winner": bets[a["winner"]]["name"], "winner_id": a["winner"], "payout": payout}
         a["phase"] = "finished"
@@ -808,7 +920,7 @@ async def handle_arena_state(request):
         "players": [{"id": i, "name": b["name"], "amount": b["amount"]} for i, b in a["bets"].items()],
         "pot": sum(b["amount"] for b in a["bets"].values()),
         "my": a["bets"][uid]["amount"] if uid in a["bets"] else 0,
-        "last": a["last"], "play_ms": int(ARENA_PLAY * 1000), "fee_percent": ARENA_FEE_PERCENT,
+        "last": a["last"], "play_ms": int(ARENA_PLAY * 1000), "fee_percent": round(settings["arena_fee"] * 100, 1),
     }
     if a["phase"] == "betting":
         out["left_ms"] = max(0, int((a["deadline"] - now) * 1000))
@@ -1079,9 +1191,11 @@ def admin_state():
         "paid": one("select coalesce(sum(amount), 0) from withdraw_requests where status = 'paid'"),
         "pending": one("select coalesce(sum(amount), 0) from withdraw_requests where status = 'pending'"),
         "granted": one("select coalesce(sum(delta), 0) from admin_log"),
+        "wagered": one("select coalesce(sum(stake), 0) from bets"),
+        "profit": one("select coalesce(sum(stake - payout), 0) from bets"),
     }
     withdrawals = [
-        {"id": r[0], "user_id": r[1], "name": r[2], "username": r[3], "amount": r[4], "created": r[5]}
+        {"id": r[0], "user_id": r[1], "name": r[2], "username": r[3], "amount": r[4], "created": r[5], "player": player_stats(r[1])}
         for r in db.execute(
             "select id, user_id, name, username, amount, created from withdraw_requests "
             "where status = 'pending' order by id"
@@ -1094,7 +1208,10 @@ def admin_state():
             "left join users u on u.id = l.user_id order by l.id desc limit 15"
         ).fetchall()
     ]
-    return {"ok": True, "stats": stats, "withdrawals": withdrawals, "channels": list_channels(), "log": log, "broadcast": broadcast}
+    return {
+        "ok": True, "stats": stats, "withdrawals": withdrawals, "channels": list_channels(),
+        "log": log, "broadcast": broadcast, "settings": settings,
+    }
 
 
 async def handle_admin_state(request):
@@ -1118,7 +1235,10 @@ async def handle_admin_users(request):
             "select id, name, username, balance from users where username like ? or name like ? order by balance desc limit 20",
             (like, like),
         ).fetchall()
-    users = [{"id": r[0], "name": r[1] or "", "username": r[2] or "", "balance": r[3]} for r in rows]
+    users = [
+        {"id": r[0], "name": r[1] or "", "username": r[2] or "", "balance": r[3], "player": player_stats(r[0])}
+        for r in rows
+    ]
     return web.json_response({"ok": True, "users": users})
 
 
@@ -1157,6 +1277,29 @@ async def handle_admin_balance(request):
         except Exception as e:
             print("admin notify error:", e)
     return web.json_response({"ok": True, "balance": get_balance(uid)})
+
+
+async def handle_admin_settings(request):
+    if not require_admin(request):
+        return jerr("Нет доступа", 403)
+    d = await read_json(request)
+    values = {}
+    for key, (low, high) in SETTING_LIMITS.items():
+        if key not in d:
+            continue
+        try:
+            value = float(d[key]) if key.endswith(("_edge", "_fee")) else int(d[key])
+        except (TypeError, ValueError):
+            return jerr(f"Неверное значение: {key}")
+        if not low <= value <= high:
+            return jerr(f"{key}: допустимо от {low} до {high}")
+        values[key] = round(value, 4) if isinstance(value, float) else value
+    if not values:
+        return jerr("Нечего сохранять")
+    save_settings(values)
+    data = admin_state()
+    data["message"] = "Настройки сохранены"
+    return web.json_response(data)
 
 
 async def handle_admin_withdraw(request):
@@ -1396,6 +1539,7 @@ app.router.add_post("/api/admin/state", handle_admin_state)
 app.router.add_post("/api/admin/users", handle_admin_users)
 app.router.add_post("/api/admin/balance", handle_admin_balance)
 app.router.add_post("/api/admin/withdraw", handle_admin_withdraw)
+app.router.add_post("/api/admin/settings", handle_admin_settings)
 app.router.add_post("/api/admin/channels/add", handle_admin_channel_add)
 app.router.add_post("/api/admin/channels/remove", handle_admin_channel_remove)
 app.router.add_post("/api/admin/broadcast", handle_admin_broadcast)

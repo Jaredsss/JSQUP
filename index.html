@@ -204,6 +204,14 @@
   .sbtn.lime { background: var(--lime); color: var(--on-accent); }
   .check { display: flex; align-items: center; gap: 10px; font-size: 14px; color: var(--muted); margin: 2px 0 12px; }
   .check input { width: 20px; height: 20px; accent-color: var(--lime); }
+  .set-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px; }
+  .set-grid label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; font-weight: 600; color: var(--muted); }
+  .set-grid .input { margin: 0; }
+  .set-grid .hint { font-size: 12px; font-weight: 500; color: var(--faint); }
+  .list-row.col { flex-direction: column; align-items: stretch; }
+  .list-row.col .acts { display: flex; gap: 8px; }
+  .list-row.col .acts .sbtn { flex: 1; justify-content: center; }
+  .warn, .list-row .s.warn { color: var(--pink); }
   .nav-in.four button { flex-direction: column; gap: 2px; font-size: 11px; }
   .nav-in.four .soon-tag { right: auto; left: calc(50% + 12px); top: 2px; font-size: 9px; padding: 0 4px; }
   #sub-overlay { z-index: 15; }
@@ -320,7 +328,7 @@
     <div class="mines-grid" id="mines-grid"></div>
 
     <div class="card" id="mines-controls" style="margin-bottom:12px;">
-      <p class="lbl">Ставка (макс. 5 000)</p>
+      <p class="lbl" id="mines-max-lbl">Ставка (макс. 5 000)</p>
       <div class="field"><div class="in"><svg class="st"><use href="#i-star"/></svg><input id="mines-amount" type="number" inputmode="numeric" min="1" max="5000" value="100" aria-label="Ставка"></div><button class="maxb" data-chip="mines-amount" data-v="max">МАКС</button></div>
       <div class="chips"><button class="chip" data-chip="mines-amount" data-v="10">10</button><button class="chip" data-chip="mines-amount" data-v="100">100</button><button class="chip" data-chip="mines-amount" data-v="500">500</button><button class="chip" data-chip="mines-amount" data-v="1000">1 000</button></div>
       <p class="lbl">Мин на поле (1–24)</p>
@@ -358,6 +366,7 @@
       <input id="upg-chance" type="range" min="1" max="80" step="1" value="35" aria-label="Шанс выигрыша">
       <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--faint);"><span>1 %</span><span>80 %</span></div>
     </div>
+    <p class="note hidden" id="upg-cap" style="text-align:center;margin:-4px 0 6px;"></p>
     <div class="line-row"><span>Выигрыш при успехе</span><span class="v"><svg class="st"><use href="#i-star"/></svg><span id="upg-win">268</span></span></div>
     <button class="btn" id="upg-btn">Улучшить</button>
   </section>
@@ -413,7 +422,7 @@
       <div class="chips"><button class="chip" data-chip="ar-amount" data-v="10">10</button><button class="chip" data-chip="ar-amount" data-v="100">100</button><button class="chip" data-chip="ar-amount" data-v="500">500</button><button class="chip" data-chip="ar-amount" data-v="1000">1 000</button></div>
       <button class="btn" id="ar-btn" data-mode="bet">Поставить</button>
     </div>
-    <div class="info3"><span>Доля <b id="ar-share">0 %</b></span><span>Выигрыш <b id="ar-prize" class="ok">0</b></span><span>Комиссия 5 %</span></div>
+    <div class="info3"><span>Доля <b id="ar-share">0 %</b></span><span>Выигрыш <b id="ar-prize" class="ok">0</b></span><span>Комиссия <b id="ar-fee">5 %</b></span></div>
   </section>
 
   <section id="v-cases" class="view hidden">
@@ -450,6 +459,13 @@
     <div class="stats" id="adm-stats"></div>
 
     <div class="card adm-card">
+      <h2>Шансы и лимиты</h2>
+      <p class="note">Маржа — доля ставок, которую казино в среднем оставляет себе. Коэффициенты у игроков пересчитываются сразу. Маржа работает на дистанции, а от крупного разового выигрыша защищает лимит выигрыша за ставку.</p>
+      <div class="set-grid" id="adm-set"></div>
+      <button class="btn" id="adm-set-save">Сохранить</button>
+    </div>
+
+    <div class="card adm-card">
       <h2>Баланс игрока</h2>
       <div class="search">
         <input class="input" id="adm-q" placeholder="ID, @username или имя" aria-label="Поиск игрока">
@@ -457,7 +473,7 @@
       </div>
       <div id="adm-users"></div>
       <div id="adm-user" class="hidden">
-        <div class="list-row sel"><span class="grow"><span class="t" id="adm-u-name"></span><span class="s" id="adm-u-meta"></span></span><b class="acc" id="adm-u-bal"></b></div>
+        <div class="list-row sel"><span class="grow"><span class="t" id="adm-u-name"></span><span class="s" id="adm-u-meta"></span><span class="s" id="adm-u-stats"></span></span><b class="acc" id="adm-u-bal"></b></div>
         <input class="input" id="adm-delta" type="number" inputmode="numeric" min="1" placeholder="Сколько звёзд" aria-label="Сколько звёзд" style="margin-top:10px;">
         <input class="input" id="adm-reason" maxlength="200" placeholder="Комментарий (необязательно)" aria-label="Комментарий">
         <label class="check"><input type="checkbox" id="adm-notify" checked> Сообщить игроку в боте</label>
@@ -551,7 +567,7 @@ var BOMB = '<svg viewBox="0 0 40 40" aria-hidden="true"><circle cx="18" cy="23" 
 var limits = { min: 1, max: 100000 };
 var minWithdraw = 1000;
 var me = { id: 0, balance: 0 };
-var upgEdge = 0;
+var upgEdge = 0, minesMax = 5000, maxWin = 0;
 
 function fmt(n) { return Number(n).toLocaleString("ru-RU"); }
 function fm(x) { return Number(x).toFixed(2).replace(".", ",") + "x"; }
@@ -670,7 +686,7 @@ document.addEventListener("click", function (e) {
   if (c) {
     var inp = $(c.dataset.chip);
     var val = c.dataset.v === "max" ? Math.max(0, me.balance) : c.dataset.v;
-    if (c.dataset.chip === "mines-amount" && val > 5000) val = 5000;
+    if (c.dataset.chip === "mines-amount" && val > minesMax) val = minesMax;
     inp.value = val;
     inp.dispatchEvent(new Event("input"));
   }
@@ -722,7 +738,7 @@ async function load() {
   if (!d.ok) { showFailDebug(d); $("fail").classList.remove("hidden"); document.querySelectorAll(".view,.nav").forEach(function (x) { x.classList.add("hidden"); }); return; }
   me.id = d.id; limits = { min: d.min, max: d.max };
   if (d.min_withdraw) minWithdraw = d.min_withdraw;
-  if (typeof d.upg_edge === "number") { upgEdge = d.upg_edge; updUpg(); }
+  applyLimits(d);
   setPending(d.pending_withdraw || 0);
   $("name").textContent = d.name;
   $("username").textContent = d.username ? "@" + d.username : "";
@@ -738,9 +754,20 @@ async function load() {
   }
 }
 
+function applyLimits(d) {
+  if (typeof d.upg_edge === "number") upgEdge = d.upg_edge;
+  if (d.mines_max_bet) minesMax = d.mines_max_bet;
+  if (typeof d.max_win === "number") maxWin = d.max_win;
+  $("mines-max-lbl").textContent = "Ставка (макс. " + fmt(minesMax) + ")";
+  $("mines-amount").max = minesMax;
+  $("upg-cap").textContent = maxWin ? "Максимальный выигрыш за ставку: " + fmt(maxWin) + " ★" : "";
+  $("upg-cap").classList.toggle("hidden", !maxWin);
+  updUpg();
+}
+
 async function refreshMe() {
   var d = await api("/api/me");
-  if (d.ok) { setBalance(d.balance); setPending(d.pending_withdraw || 0); }
+  if (d.ok) { setBalance(d.balance); setPending(d.pending_withdraw || 0); applyLimits(d); }
   loadTask();
 }
 
@@ -863,7 +890,7 @@ $("mines-plus").addEventListener("click", function() {
 });
 $("mines-amount").addEventListener("input", function() {
   var val = readAmount("mines-amount");
-  if (val > 5000) { $("mines-amount").value = 5000; }
+  if (val > minesMax) { $("mines-amount").value = minesMax; }
   if (!minesState.active) updateMinesUI();
 });
 
@@ -871,7 +898,7 @@ $("mines-btn").addEventListener("click", async function() {
   if (!minesState.active) {
     var amt = readAmount("mines-amount");
     if (!amt) { toast("Введи ставку"); return; }
-    if (amt > 5000) { toast("Максимальная ставка — 5 000 звёзд"); return; }
+    if (amt > minesMax) { toast("Максимальная ставка — " + fmt(minesMax) + " звёзд"); return; }
     if (amt > me.balance) { toast("Не хватает звёзд"); return; }
     
     var d = await api("/api/mines/start", { amount: amt, mines: minesState.minesCount });
@@ -921,7 +948,7 @@ $("mines-grid").addEventListener("click", async function(e) {
     if (d.won) {
       setBalance(d.balance);
       minesState.active = false;
-      showGamePopup("Победа! +" + fmt(d.payout) + " ★", true);
+      showGamePopup((d.capped ? "Макс. выигрыш! +" : "Победа! +") + fmt(d.payout) + " ★", true);
       confetti($("mines-grid"), 50);
       updateMinesUI();
       $("mines-controls").style.display = "";
@@ -951,6 +978,7 @@ $("upg-btn").addEventListener("click", async function () {
   upgSpin = true; $("upg-btn").textContent = "Крутится…"; $("upg-result").textContent = "";
   var d = await api("/api/upgrader", { amount: amt, chance: ch });
   if (!d.ok) { upgSpin = false; $("upg-btn").textContent = "Улучшить"; toast(d.error || "Ошибка"); return; }
+  if (typeof d.edge === "number" && d.edge !== upgEdge) { upgEdge = d.edge; updUpg(); }
   needle = Math.ceil(needle / 360) * 360 + 360 * 4 + d.roll * 3.6;
   $("upg-needle").style.transform = "rotate(" + needle + "deg)";
   setTimeout(function () {
@@ -1138,6 +1166,7 @@ function renderArenaPanel() {
   var mine = s.my + (canBet ? typed : 0), pot = s.pot + (canBet ? typed : 0);
   $("ar-share").textContent = (pot > 0 ? (mine / pot * 100).toFixed(1).replace(".", ",") : "0") + " %";
   $("ar-prize").textContent = fmt(Math.floor(pot * (100 - s.fee_percent) / 100));
+  $("ar-fee").textContent = String(s.fee_percent).replace(".", ",") + " %";
 }
 $("ar-amount").addEventListener("input", function () { if (as) renderArenaPanel(); });
 $("ar-btn").addEventListener("click", async function () {
@@ -1235,6 +1264,36 @@ $("sub-check").addEventListener("click", async function () {
 /* ---------- Админка ---------- */
 var adm = { sel: null, busy: false };
 function fdate(ts) { var d = new Date(ts * 1000); return d.toLocaleDateString("ru-RU") + " " + d.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }); }
+function playerLine(p) {
+  return "Пополнил " + fmt(p.deposited) + (p.granted ? " · выдано " + fmt(p.granted) : "") + " · ставок " + fmt(p.bets) + " на " + fmt(p.wagered) +
+    " · итог в играх " + (p.net > 0 ? "+" : "") + fmt(p.net) + " · выведено " + fmt(p.withdrawn);
+}
+var SETTINGS_UI = [
+  ["upg_edge", "Маржа Апгрейдера, %", "pct"], ["mines_edge", "Маржа Мин, %", "pct"],
+  ["crash_edge", "Маржа Краша, %", "pct"], ["arena_fee", "Комиссия Арены, %", "pct"],
+  ["max_bet", "Макс. ставка", "int"], ["mines_max_bet", "Макс. ставка в Минах", "int"],
+  ["max_win", "Макс. выигрыш за ставку (0 — без лимита)", "int"]
+];
+function renderSettings(st) {
+  if (document.activeElement && document.activeElement.closest && document.activeElement.closest("#adm-set")) return;
+  $("adm-set").innerHTML = SETTINGS_UI.map(function (f) {
+    var v = f[2] === "pct" ? Math.round(st[f[0]] * 1000) / 10 : st[f[0]];
+    var hint = f[2] === "pct" && f[0] !== "arena_fee" ? "Игрокам возвращается " + (Math.round((100 - v) * 10) / 10) + " %" : "";
+    return '<label' + (f[0] === "max_win" ? ' style="grid-column:1/-1"' : "") + '>' + f[1] +
+      '<input class="input" type="number" inputmode="decimal" data-set="' + f[0] + '" data-kind="' + f[2] + '" value="' + v + '" step="' + (f[2] === "pct" ? "0.5" : "1") + '" min="0">' +
+      (hint ? '<span class="hint">' + hint + "</span>" : "") + "</label>";
+  }).join("");
+}
+$("adm-set-save").addEventListener("click", async function () {
+  var body = {};
+  document.querySelectorAll("#adm-set [data-set]").forEach(function (i) {
+    var v = parseFloat(String(i.value).replace(",", "."));
+    if (!isNaN(v)) body[i.dataset.set] = i.dataset.kind === "pct" ? v / 100 : Math.round(v);
+  });
+  document.activeElement && document.activeElement.blur && document.activeElement.blur();
+  var d = await admAction("/api/admin/settings", body);
+  if (d) applyLimits({ upg_edge: d.settings.upg_edge, mines_max_bet: d.settings.mines_max_bet, max_win: d.settings.max_win });
+});
 function userLine(name, username, id) { return esc(name || "Без имени") + (username ? " · @" + esc(username) : "") + " · " + id; }
 
 function renderAdmin(d) {
@@ -1242,15 +1301,18 @@ function renderAdmin(d) {
   var tiles = [
     ["Игроков", s.users, ""], ["На балансах", s.balances, ""],
     ["Пополнено", s.topups, ""], ["Выплачено", s.paid, ""],
-    ["Ждут вывода", s.pending, "pink"], ["Выдано админом", s.granted, ""]
+    ["Ждут вывода", s.pending, "pink"], ["Выдано админом", s.granted, ""],
+    ["Поставлено", s.wagered, ""], ["Доход с игр", s.profit, s.profit < 0 ? "pink" : ""]
   ];
   $("adm-stats").innerHTML = tiles.map(function (t) {
     return '<div class="stat"><p class="lbl">' + t[0] + '</p><div class="val sm2 ' + t[2] + '">' + fmt(t[1]) + "</div></div>";
   }).join("");
 
   $("adm-wd").innerHTML = d.withdrawals.map(function (w) {
-    return '<div class="list-row"><span class="grow"><span class="t">' + fmt(w.amount) + ' ★</span><span class="s">' + userLine(w.name, w.username, w.user_id) + " · " + fdate(w.created) + '</span></span>' +
-      '<button class="sbtn lime" data-wd="' + w.id + '" data-ok="1">Выдал</button><button class="sbtn" data-wd="' + w.id + '" data-ok="0">Отклонить</button></div>';
+    var p = w.player, sus = p.withdrawn + w.amount > p.deposited + Math.max(0, p.granted) && p.net > 0;
+    return '<div class="list-row col"><span><span class="t">' + fmt(w.amount) + ' ★</span><span class="s">' + userLine(w.name, w.username, w.user_id) + " · " + fdate(w.created) + '</span>' +
+      '<span class="s' + (sus ? " warn" : "") + '">' + playerLine(p) + (sus ? " · выводит больше, чем внёс" : "") + '</span></span>' +
+      '<span class="acts"><button class="sbtn lime" data-wd="' + w.id + '" data-ok="1">Выдал</button><button class="sbtn" data-wd="' + w.id + '" data-ok="0">Отклонить</button></span></div>';
   }).join("") || '<p class="note" style="margin:0;">Заявок нет</p>';
 
   $("adm-ch").innerHTML = d.channels.map(function (c) {
@@ -1261,6 +1323,7 @@ function renderAdmin(d) {
     return '<div class="list-row"><span class="grow"><span class="t">' + esc(l.name || "Игрок") + " · " + l.user_id + '</span><span class="s">' + fdate(l.created) + (l.reason ? " · " + esc(l.reason) : "") + '</span></span><b class="' + (l.delta > 0 ? "acc" : "bad") + '">' + (l.delta > 0 ? "+" : "") + fmt(l.delta) + "</b></div>";
   }).join("") || '<p class="note" style="margin:0;">Пока пусто</p>';
 
+  renderSettings(d.settings);
   var b = d.broadcast;
   $("adm-bc-status").textContent = b.total ? (b.running ? "Идёт рассылка: " : "Последняя рассылка: ") + fmt(b.sent) + " из " + fmt(b.total) + " доставлено" + (b.failed ? ", ошибок " + fmt(b.failed) : "") : "";
   clearTimeout(adm.t);
@@ -1285,6 +1348,7 @@ function selectUser(u) {
   adm.sel = u;
   $("adm-u-name").textContent = u.name || "Без имени";
   $("adm-u-meta").textContent = (u.username ? "@" + u.username + " · " : "") + "ID " + u.id;
+  $("adm-u-stats").textContent = u.player ? playerLine(u.player) : "";
   $("adm-u-bal").textContent = fmt(u.balance) + " ★";
   $("adm-user").classList.remove("hidden");
 }
