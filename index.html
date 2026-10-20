@@ -561,7 +561,7 @@
   <section id="v-bonus" class="view hidden">
     <button class="back" data-go="games"><svg class="ic"><use href="#i-back"/></svg>Игры</button>
     <h1>Ежедневный бонус</h1>
-    <p class="lead">Крути колесо раз в сутки. Размер сектора равен шансу.</p>
+    <p class="lead">Крути колесо раз в сутки. Шансы секторов разные, они указаны под колесом.</p>
     <div class="wheel-wrap">
       <svg viewBox="0 0 300 300" class="wheel-svg" role="img" aria-label="Колесо бонуса">
         <g id="wheel-g"></g>
@@ -1845,7 +1845,7 @@ function renderWheel() {
   var total = bonus.sectors.reduce(function (a, s) { return a + s.weight; }, 0), a = 0, html = "";
   bonus.mids = [];
   bonus.sectors.forEach(function (s, i) {
-    var span = s.weight / total * Math.PI * 2, mid = a + span / 2;
+    var span = Math.PI * 2 / bonus.sectors.length, mid = a + span / 2;
     bonus.mids.push(mid * 180 / Math.PI);
     var col = s.amount === 0 ? "#3A1A2C" : WHEEL_COLORS[i % 3];
     html += '<path d="' + wheelPath(a, a + span, 140) + '" fill="' + col + '" stroke="#0B0B12" stroke-width="2"/>';
