@@ -222,6 +222,26 @@
   .verdict { font-weight: 700; font-size: 13px; margin: 10px 0 0; }
   .fair-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); margin: 10px 0; }
   .fair-row b { color: var(--text); }
+  .bonus-banner { display: flex; align-items: center; gap: 14px; width: 100%; text-align: left; padding: 14px 16px; margin-bottom: 10px; border-radius: 22px; background: var(--surface); border: 1.5px dashed var(--line2); color: var(--text); }
+  .bonus-banner.ready { border: 1.5px solid var(--lime); background: var(--lime-deep); }
+  .bonus-banner .t { display: block; font-family: var(--display); font-weight: 800; font-size: 16px; }
+  .bonus-banner .s { display: block; font-size: 13px; color: var(--muted); margin-top: 2px; }
+  .bonus-banner.ready .s { color: var(--lime); }
+  .seg { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 4px; background: var(--deep); border: 1.5px solid var(--line2); border-radius: 14px; padding: 4px; margin-bottom: 14px; }
+  .seg button { min-height: 40px; border: none; border-radius: 10px; background: none; color: var(--muted); font-weight: 700; font-size: 14px; }
+  .seg button.on { background: var(--lime); color: var(--on-accent); }
+  .coin-stage { perspective: 800px; display: flex; justify-content: center; padding: 18px 0 8px; }
+  .coin { position: relative; width: 170px; height: 170px; transform-style: preserve-3d; transition: transform 1.8s cubic-bezier(.2,.75,.2,1); }
+  .coin .face { position: absolute; inset: 0; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-family: var(--display); font-weight: 800; font-size: 26px; backface-visibility: hidden; -webkit-backface-visibility: hidden; }
+  .coin .heads { background: var(--lime); color: var(--on-accent); box-shadow: inset 0 0 0 10px rgba(11,11,18,.15); }
+  .coin .tails { background: var(--pink); color: var(--on-accent); transform: rotateY(180deg); box-shadow: inset 0 0 0 10px rgba(11,11,18,.15); }
+  .wheel-wrap { display: flex; justify-content: center; margin: 4px 0 6px; }
+  .wheel-svg { width: 290px; height: 290px; }
+  #pl-svg g { transform-box: fill-box; transform-origin: center; }
+  #wheel-g { transform-origin: 150px 150px; transform-box: view-box; transition: transform 5s cubic-bezier(.12,.7,.08,1); }
+  .odds { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 14px; font-size: 14px; color: var(--muted); }
+  .odds span { display: flex; justify-content: space-between; }
+  .odds b { color: var(--text); }
   .nav-in.four button { flex-direction: column; gap: 2px; font-size: 11px; }
   .nav-in.four .soon-tag { right: auto; left: calc(50% + 12px); top: 2px; font-size: 9px; padding: 0 4px; }
   #sub-overlay { z-index: 15; }
@@ -299,6 +319,12 @@
       </span>
     </button>
 
+    <button class="bonus-banner" id="bonus-banner" data-go="bonus">
+      <svg width="40" height="40" viewBox="0 0 40 40" aria-hidden="true"><circle cx="20" cy="20" r="17" fill="none" stroke="#C6FF3D" stroke-width="3"/><path d="M20 3v34M3 20h34M8 8l24 24M32 8L8 32" stroke="#C6FF3D" stroke-width="1.5"/><circle cx="20" cy="20" r="5" fill="#FF4FA3"/></svg>
+      <span style="flex:1;min-width:0;"><span class="t">Ежедневный бонус</span><span class="s" id="bonus-banner-sub">Крути колесо раз в сутки</span></span>
+      <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg>
+    </button>
+
     <div class="grid2">
       <button class="gcard lime" data-go="mines" aria-label="Мины">
         <svg class="gi" viewBox="0 0 40 40" aria-hidden="true"><path d="M12 8h16l8 9-16 17L4 17z" fill="none" stroke="#0B0B12" stroke-width="2.6" stroke-linejoin="round"/><path d="M4 17h32M15 8l5 26M25 8l-5 26" stroke="#0B0B12" stroke-width="2" fill="none"/></svg>
@@ -312,7 +338,15 @@
         <svg class="gi" viewBox="0 0 40 40" aria-hidden="true"><rect x="3" y="3" width="15" height="13" rx="4" fill="#FF4FA3"/><rect x="21" y="3" width="16" height="20" rx="4" fill="none" stroke="#F5F5FA" stroke-width="2.4"/><rect x="3" y="19" width="15" height="18" rx="4" fill="none" stroke="#F5F5FA" stroke-width="2.4"/><rect x="21" y="26" width="16" height="11" rx="4" fill="#C6FF3D"/></svg>
         <span><span class="gname">Арена</span><span class="gdesc" style="display:block">Один заберёт банк</span></span>
       </button>
-      <button class="gcard soon" data-go="cases" aria-label="Кейсы">
+      <button class="gcard" data-go="plinko" aria-label="Плинко">
+        <svg class="gi" viewBox="0 0 40 40" aria-hidden="true"><circle cx="20" cy="6" r="2.5" fill="#F5F5FA"/><circle cx="14" cy="14" r="2.5" fill="#F5F5FA"/><circle cx="26" cy="14" r="2.5" fill="#F5F5FA"/><circle cx="8" cy="22" r="2.5" fill="#F5F5FA"/><circle cx="20" cy="22" r="2.5" fill="#F5F5FA"/><circle cx="32" cy="22" r="2.5" fill="#F5F5FA"/><rect x="2" y="30" width="10" height="7" rx="2" fill="#FF4FA3"/><rect x="15" y="30" width="10" height="7" rx="2" fill="#33333F"/><rect x="28" y="30" width="10" height="7" rx="2" fill="#C6FF3D"/><circle cx="17" cy="18" r="3.5" fill="#FF4FA3"/></svg>
+        <span><span class="gname">Плинко</span><span class="gdesc" style="display:block">До ×950</span></span>
+      </button>
+      <button class="gcard" data-go="coin" aria-label="Монетка">
+        <svg class="gi" viewBox="0 0 40 40" aria-hidden="true"><ellipse cx="20" cy="20" rx="16" ry="16" fill="#C6FF3D"/><ellipse cx="20" cy="20" rx="11" ry="11" fill="none" stroke="#0B0B12" stroke-width="2"/><path d="M16 15h8M20 15v11" stroke="#0B0B12" stroke-width="2.4" stroke-linecap="round"/></svg>
+        <span><span class="gname">Монетка</span><span class="gdesc" style="display:block" id="coin-desc">Орёл или решка</span></span>
+      </button>
+      <button class="gcard soon" data-go="cases" aria-label="Кейсы" style="grid-column:1/-1;height:96px;">
         <svg class="gi" viewBox="0 0 40 40" aria-hidden="true"><path d="M20 4l15 8v16l-15 8-15-8V12z M5 12l15 8 15-8 M20 20v16" fill="none" stroke="#6E6E82" stroke-width="2.4" stroke-linejoin="round"/></svg>
         <span><span class="gname">Кейсы</span><span class="gdesc" style="display:block">Скоро</span></span>
       </button>
@@ -468,6 +502,11 @@
       <div id="earn-body"><p class="mu" style="margin:0;">Загрузка…</p></div>
     </div>
 
+    <div class="card" style="margin-top:12px;">
+      <p class="who-name" style="margin-bottom:12px;">Промокод</p>
+      <div class="search"><input class="input" id="promo-code" maxlength="32" placeholder="Введи промокод" aria-label="Промокод" autocomplete="off" autocapitalize="characters" spellcheck="false"><button class="sbtn lime" id="promo-go">Активировать</button></div>
+    </div>
+
     <div class="card" id="fair" style="margin-top:12px;">
       <p class="who-name">Честная игра</p>
       <p class="who-tag" style="margin-bottom:12px;">Результат каждой ставки считается из двух сидов. Хэш сервер-сида ты видишь заранее, поэтому подменить исход нельзя. После смены сидов сервер-сид раскрывается, и любую ставку можно проверить.</p>
@@ -479,6 +518,61 @@
       <div class="row2"><button class="btn btn-ghost" id="fair-rotate">Сменить сиды</button><button class="btn" data-go="history">История ставок</button></div>
       <div class="list-row hidden" id="fair-prev" style="display:block;"></div>
     </div>
+  </section>
+
+  <!-- Плинко -->
+  <section id="v-plinko" class="view hidden">
+    <button class="back" data-go="games"><svg class="ic"><use href="#i-back"/></svg>Игры</button>
+    <div class="hx" id="pl-hist"></div>
+    <div class="stage"><svg id="pl-svg" viewBox="0 0 340 300" role="img" aria-label="Доска Плинко"></svg></div>
+    <div class="card" style="margin-top:12px;">
+      <p class="lbl">Ставка</p>
+      <div class="field"><div class="in"><svg class="st"><use href="#i-star"/></svg><input id="pl-amount" type="number" inputmode="numeric" min="1" value="100" aria-label="Ставка"></div><button class="maxb" data-chip="pl-amount" data-v="max">МАКС</button></div>
+      <div class="chips"><button class="chip" data-chip="pl-amount" data-v="10">10</button><button class="chip" data-chip="pl-amount" data-v="100">100</button><button class="chip" data-chip="pl-amount" data-v="500">500</button><button class="chip" data-chip="pl-amount" data-v="1000">1 000</button></div>
+      <p class="lbl">Рядов</p>
+      <div class="seg" id="pl-rows" role="group" aria-label="Рядов"><button data-v="8">8</button><button data-v="12" class="on">12</button><button data-v="16">16</button></div>
+      <p class="lbl">Риск</p>
+      <div class="seg" id="pl-risk" role="group" aria-label="Риск"><button data-v="low">Низкий</button><button data-v="medium" class="on">Средний</button><button data-v="high">Высокий</button></div>
+    </div>
+    <button class="btn" id="pl-btn" style="margin-top:12px;">Бросить шарик</button>
+    <button class="linkbtn" data-go="history">Проверить честность</button>
+  </section>
+
+  <!-- Монетка -->
+  <section id="v-coin" class="view hidden">
+    <button class="back" data-go="games"><svg class="ic"><use href="#i-back"/></svg>Игры</button>
+    <div class="coin-stage">
+      <div class="coin" id="coin"><div class="face heads">Орёл</div><div class="face tails">Решка</div></div>
+    </div>
+    <div class="res" id="coin-result"></div>
+    <div class="card">
+      <p class="lbl">Ставка</p>
+      <div class="field"><div class="in"><svg class="st"><use href="#i-star"/></svg><input id="coin-amount" type="number" inputmode="numeric" min="1" value="100" aria-label="Ставка"></div><button class="maxb" data-chip="coin-amount" data-v="max">МАКС</button></div>
+      <div class="chips"><button class="chip" data-chip="coin-amount" data-v="10">10</button><button class="chip" data-chip="coin-amount" data-v="100">100</button><button class="chip" data-chip="coin-amount" data-v="500">500</button><button class="chip" data-chip="coin-amount" data-v="1000">1 000</button></div>
+      <p class="lbl">Ставлю на</p>
+      <div class="seg" id="coin-side" role="group" aria-label="Сторона"><button data-v="heads" class="on">Орёл</button><button data-v="tails">Решка</button></div>
+    </div>
+    <div class="line-row"><span>Выигрыш при успехе</span><span class="v"><svg class="st"><use href="#i-star"/></svg><span id="coin-win">188</span></span></div>
+    <button class="btn" id="coin-btn">Подбросить</button>
+    <button class="linkbtn" data-go="history">Проверить честность</button>
+  </section>
+
+  <!-- Ежедневный бонус -->
+  <section id="v-bonus" class="view hidden">
+    <button class="back" data-go="games"><svg class="ic"><use href="#i-back"/></svg>Игры</button>
+    <h1>Ежедневный бонус</h1>
+    <p class="lead">Крути колесо раз в сутки. Размер сектора равен шансу.</p>
+    <div class="wheel-wrap">
+      <svg viewBox="0 0 300 300" class="wheel-svg" role="img" aria-label="Колесо бонуса">
+        <g id="wheel-g"></g>
+        <circle cx="150" cy="150" r="26" fill="#0B0B12" stroke="#C6FF3D" stroke-width="3"/>
+        <polygon points="150,8 138,30 162,30" fill="#FF4FA3" stroke="#0B0B12" stroke-width="2"/>
+      </svg>
+    </div>
+    <div class="res" id="bonus-result"></div>
+    <button class="btn" id="bonus-btn">Крутить</button>
+    <div class="card" style="margin-top:12px;"><p class="lbl">Шансы</p><div id="bonus-odds" class="odds"></div></div>
+    <button class="linkbtn" data-go="history">Проверить честность</button>
   </section>
 
   <section id="v-history" class="view hidden">
@@ -498,6 +592,18 @@
       <p class="note">Маржа — доля ставок, которую казино в среднем оставляет себе. Коэффициенты у игроков пересчитываются сразу. Маржа работает на дистанции, а от крупного разового выигрыша защищает лимит выигрыша за ставку.</p>
       <div class="set-grid" id="adm-set"></div>
       <button class="btn" id="adm-set-save">Сохранить</button>
+    </div>
+
+    <div class="card adm-card">
+      <h2>Промокоды</h2>
+      <div class="set-grid">
+        <label>Код (пусто — случайный)<input class="input" id="pr-code" maxlength="32" autocomplete="off" autocapitalize="characters" spellcheck="false"></label>
+        <label>Сумма, ★<input class="input" id="pr-amount" type="number" inputmode="numeric" min="1" value="100"></label>
+        <label>Активаций (0 — без лимита)<input class="input" id="pr-uses" type="number" inputmode="numeric" min="0" value="50"></label>
+        <label>Дней (0 — бессрочно)<input class="input" id="pr-days" type="number" inputmode="numeric" min="0" value="7"></label>
+      </div>
+      <button class="btn" id="pr-create">Создать промокод</button>
+      <div id="adm-promos"></div>
     </div>
 
     <div class="card adm-card">
@@ -697,7 +803,7 @@ function setAvatar(el, photo, name) {
   } else el.textContent = letter;
 }
 
-var views = ["games", "mines", "upg", "crash", "arena", "cases", "profile", "admin", "history"], curView = "games";
+var views = ["games", "mines", "upg", "crash", "arena", "cases", "profile", "admin", "history", "plinko", "coin", "bonus"], curView = "games";
 function go(name) {
   if (curView === "crash") stopCrash();
   if (curView === "arena") stopArena();
@@ -712,6 +818,9 @@ function go(name) {
   if (name === "crash") startCrash();
   if (name === "arena") startArena();
   if (name === "mines") initMinesView();
+  if (name === "plinko") renderPlinkoBoard();
+  if (name === "coin") updCoin();
+  if (name === "bonus") loadBonus();
   if (name === "admin") loadAdmin();
 }
 
@@ -782,6 +891,7 @@ async function load() {
   setAvatar($("avatar-sm"), d.photo, d.name);
   setAvatar($("avatar-lg"), d.photo, d.name);
   loadTask();
+  loadBonus();
   showSubs(d.subs);
   if (d.is_admin) {
     $("nav-admin").classList.remove("hidden");
@@ -791,6 +901,8 @@ async function load() {
 }
 
 function applyLimits(d) {
+  if (d.plinko) { plinkoTables = d.plinko; if (curView === "plinko" && !plBalls) renderPlinkoBoard(); }
+  if (d.coin_mult) { coinMult = d.coin_mult; $("coin-desc").textContent = "Орёл или решка · ×" + String(coinMult).replace(".", ","); updCoin(); }
   if (typeof d.upg_edge === "number") upgEdge = d.upg_edge;
   if (d.mines_max_bet) minesMax = d.mines_max_bet;
   if (typeof d.max_win === "number") maxWin = d.max_win;
@@ -1310,11 +1422,16 @@ var SETTINGS_UI = [
   ["upg_edge", "Маржа Апгрейдера, %", "pct"], ["mines_edge", "Маржа Мин, %", "pct"],
   ["crash_edge", "Маржа Краша, %", "pct"], ["arena_fee", "Комиссия Арены, %", "pct"],
   ["max_bet", "Макс. ставка", "int"], ["mines_max_bet", "Макс. ставка в Минах", "int"],
-  ["max_win", "Макс. выигрыш за ставку (0 — без лимита)", "int"]
+  ["plinko_edge", "Маржа Плинко, %", "pct"], ["coin_edge", "Маржа Монетки, %", "pct"],
+  ["max_win", "Макс. выигрыш за ставку (0 — без лимита)", "int"],
+  ["bonus_wheel", "Колесо бонуса: сумма:вес через запятую", "text"]
 ];
 function renderSettings(st) {
   if (document.activeElement && document.activeElement.closest && document.activeElement.closest("#adm-set")) return;
   $("adm-set").innerHTML = SETTINGS_UI.map(function (f) {
+    if (f[2] === "text") {
+      return '<label style="grid-column:1/-1">' + f[1] + '<input class="input" data-set="' + f[0] + '" data-kind="text" value="' + esc(st[f[0]]) + '" spellcheck="false" autocomplete="off"><span class="hint">0 — пустой сектор. Вес — шанс: при сумме весов 100 вес 30 = 30 %</span></label>';
+    }
     var v = f[2] === "pct" ? Math.round(st[f[0]] * 1000) / 10 : st[f[0]];
     var hint = f[2] === "pct" && f[0] !== "arena_fee" ? "Игрокам возвращается " + (Math.round((100 - v) * 10) / 10) + " %" : "";
     return '<label' + (f[0] === "max_win" ? ' style="grid-column:1/-1"' : "") + '>' + f[1] +
@@ -1325,12 +1442,13 @@ function renderSettings(st) {
 $("adm-set-save").addEventListener("click", async function () {
   var body = {};
   document.querySelectorAll("#adm-set [data-set]").forEach(function (i) {
+    if (i.dataset.kind === "text") { body[i.dataset.set] = i.value.trim(); return; }
     var v = parseFloat(String(i.value).replace(",", "."));
     if (!isNaN(v)) body[i.dataset.set] = i.dataset.kind === "pct" ? v / 100 : Math.round(v);
   });
   document.activeElement && document.activeElement.blur && document.activeElement.blur();
   var d = await admAction("/api/admin/settings", body);
-  if (d) applyLimits({ upg_edge: d.settings.upg_edge, mines_max_bet: d.settings.mines_max_bet, max_win: d.settings.max_win });
+  if (d) refreshMe();
 });
 function userLine(name, username, id) { return esc(name || "Без имени") + (username ? " · @" + esc(username) : "") + " · " + id; }
 
@@ -1340,7 +1458,8 @@ function renderAdmin(d) {
     ["Игроков", s.users, ""], ["На балансах", s.balances, ""],
     ["Пополнено", s.topups, ""], ["Выплачено", s.paid, ""],
     ["Ждут вывода", s.pending, "pink"], ["Выдано админом", s.granted, ""],
-    ["Поставлено", s.wagered, ""], ["Доход с игр", s.profit, s.profit < 0 ? "pink" : ""]
+    ["Поставлено", s.wagered, ""], ["Доход с игр", s.profit, s.profit < 0 ? "pink" : ""],
+    ["Выдано промокодами", s.promo, ""], ["Выдано бонусами", s.bonus, ""]
   ];
   $("adm-stats").innerHTML = tiles.map(function (t) {
     return '<div class="stat"><p class="lbl">' + t[0] + '</p><div class="val sm2 ' + t[2] + '">' + fmt(t[1]) + "</div></div>";
@@ -1356,6 +1475,12 @@ function renderAdmin(d) {
   $("adm-ch").innerHTML = d.channels.map(function (c) {
     return '<div class="list-row"><span class="grow"><span class="t">' + esc(c.title) + '</span><span class="s">' + esc(c.url) + '</span></span><button class="sbtn" data-ch-del="' + c.id + '" aria-label="Удалить канал">Удалить</button></div>';
   }).join("") || '<p class="note" style="margin:0;">Подписки не требуются</p>';
+
+  $("adm-promos").innerHTML = (d.promos || []).map(function (p) {
+    var exp = p.expires ? (p.expires * 1000 < Date.now() ? "истёк " : "до ") + fdate(p.expires) : "бессрочно";
+    return '<div class="list-row"><span class="grow"><span class="t mono" style="font-size:14px;font-weight:700;">' + esc(p.code) + '</span><span class="s">+' + fmt(p.amount) + " ★ · " + fmt(p.uses) + (p.max_uses ? " из " + fmt(p.max_uses) : "") + " активаций · " + exp + (p.active ? "" : " · выключен") + '</span></span>' +
+      '<button class="sbtn' + (p.active ? "" : " lime") + '" data-promo="' + esc(p.code) + '">' + (p.active ? "Выключить" : "Включить") + "</button></div>";
+  }).join("") || '<p class="note" style="margin:12px 0 0;">Промокодов пока нет</p>';
 
   $("adm-log").innerHTML = d.log.map(function (l) {
     return '<div class="list-row"><span class="grow"><span class="t">' + esc(l.name || "Игрок") + " · " + l.user_id + '</span><span class="s">' + fdate(l.created) + (l.reason ? " · " + esc(l.reason) : "") + '</span></span><b class="' + (l.delta > 0 ? "acc" : "bad") + '">' + (l.delta > 0 ? "+" : "") + fmt(l.delta) + "</b></div>";
@@ -1405,7 +1530,7 @@ async function findUsers() {
 $("adm-find").addEventListener("click", findUsers);
 $("adm-q").addEventListener("keydown", function (e) { if (e.key === "Enter") findUsers(); });
 $("v-admin").addEventListener("click", async function (e) {
-  var t = e.target.closest("[data-u],[data-act],[data-wd],[data-ch-del]");
+  var t = e.target.closest("[data-u],[data-act],[data-wd],[data-ch-del],[data-promo]");
   if (!t) return;
   if (t.dataset.u !== undefined) { selectUser(adm.found[+t.dataset.u]); return; }
   if (t.dataset.act) {
@@ -1427,10 +1552,15 @@ $("v-admin").addEventListener("click", async function (e) {
     await admAction("/api/admin/withdraw", { id: +t.dataset.wd, approve: ok });
     return;
   }
+  if (t.dataset.promo) { await admAction("/api/admin/promo/toggle", { code: t.dataset.promo }); return; }
   if (t.dataset.chDel) {
     if (!confirm("Убрать канал из обязательных подписок?")) return;
     await admAction("/api/admin/channels/remove", { id: +t.dataset.chDel });
   }
+});
+$("pr-create").addEventListener("click", async function () {
+  var d = await admAction("/api/admin/promo/create", { code: $("pr-code").value.trim(), amount: readAmount("pr-amount"), max_uses: parseInt($("pr-uses").value, 10) || 0, days: parseInt($("pr-days").value, 10) || 0 });
+  if (d) $("pr-code").value = "";
 });
 $("adm-ch-add").addEventListener("click", async function () {
   var chat = $("adm-ch-chat").value.trim();
@@ -1447,7 +1577,8 @@ $("adm-bc-go").addEventListener("click", async function () {
 });
 
 /* ---------- Честная игра ---------- */
-var GAME_NAMES = { upgrader: "Апгрейдер", mines: "Мины", crash: "Краш", arena: "Арена" };
+var GAME_NAMES = { upgrader: "Апгрейдер", mines: "Мины", crash: "Краш", arena: "Арена", plinko: "Плинко", coin: "Монетка", bonus: "Бонус-колесо" };
+var RISK_NAMES = { low: "низкий", medium: "средний", high: "высокий" };
 var hist = [];
 var te = new TextEncoder();
 async function sha256hex(text) {
@@ -1502,6 +1633,8 @@ function betTitle(b) {
   var f = b.fair || {}, t = GAME_NAMES[b.game] || b.game;
   if (b.game === "upgrader" && f.chance) t += " · шанс " + f.chance + " %";
   if (b.game === "mines" && f.mines_count) t += " · мин " + f.mines_count;
+  if (b.game === "plinko" && f.rows) t += " · " + f.rows + " рядов, " + RISK_NAMES[f.risk] + " риск";
+  if (b.game === "coin" && f.side) t += " · " + (f.side === "heads" ? "орёл" : "решка");
   if (b.game === "crash" && f.cashed) t += " · забрал ×" + String(f.cashed).replace(".", ",");
   return t;
 }
@@ -1538,6 +1671,28 @@ async function verifyBet(b) {
       var win = roll < f.chance, pay = win ? Math.floor(b.stake * 100 * (1 - f.edge) / f.chance) : 0;
       html += vrow("Результат", "Выпало " + roll.toFixed(4).replace(".", ",") + " при шансе " + f.chance + " % → " + (win ? "победа, выплата " + fmt(pay) : "проигрыш"));
       html += verdict(roll === f.roll && pay === b.payout, roll === f.roll && pay === b.payout ? "бросок и выплата те же, что на сервере" : "результат отличается");
+    } else if (b.game === "plinko") {
+      var fl = await fairFloats(f.server_seed, f.client_seed, f.nonce, f.rows);
+      var path = fl.map(function (x) { return x >= 0.5 ? 1 : 0; }), slot = path.reduce(function (a, c) { return a + c; }, 0);
+      var ppay = Math.floor(b.stake * f.mult); if (f.max_win) ppay = Math.min(ppay, f.max_win);
+      html += vrow("Путь шарика", path.map(function (x) { return x ? "вправо" : "влево"; }).join(", "));
+      html += vrow("Результат", "Лунка " + (slot + 1) + " из " + (f.rows + 1) + " · ×" + String(f.mult).replace(".", ",") + " → выплата " + fmt(ppay));
+      var pOk = slot === f.slot && path.join("") === f.path.join("") && ppay === b.payout;
+      html += verdict(pOk, pOk ? "путь шарика определён сидами" : "результат отличается");
+    } else if (b.game === "coin") {
+      var cr = (await fairFloats(f.server_seed, f.client_seed, f.nonce, 1))[0] < 0.5 ? "heads" : "tails";
+      var cpay = cr === f.side ? Math.floor(b.stake * f.mult) : 0;
+      html += vrow("Результат", "Выпал" + (cr === "heads" ? " орёл" : "а решка") + ", ставка на " + (f.side === "heads" ? "орла" : "решку") + " → " + (cpay ? "выплата " + fmt(cpay) : "проигрыш"));
+      var cOk2 = cr === f.result && cpay === b.payout;
+      html += verdict(cOk2, cOk2 ? "сторона определена сидами" : "результат отличается");
+    } else if (b.game === "bonus") {
+      var tot = f.sectors.reduce(function (a, c) { return a + c.weight; }, 0);
+      var bp = (await fairFloats(f.server_seed, f.client_seed, f.nonce, 1))[0] * tot, bacc = 0, bi = f.sectors.length - 1;
+      for (var q = 0; q < f.sectors.length; q++) { bacc += f.sectors[q].weight; if (bp < bacc) { bi = q; break; } }
+      html += vrow("Сектора (сумма — вес)", f.sectors.map(function (x) { return fmt(x.amount) + " — " + x.weight; }).join(", "));
+      html += vrow("Результат", "Выпало " + bp.toFixed(2).replace(".", ",") + " из " + tot + " → " + fmt(f.sectors[bi].amount) + " ★");
+      var bOk = bi === f.index && f.sectors[bi].amount === b.payout;
+      html += verdict(bOk, bOk ? "сектор определён сидами" : "результат отличается");
     } else {
       var mines = minesFrom(await fairFloats(f.server_seed, f.client_seed, f.nonce, f.mines_count), f.mines_count);
       var same = mines.join(",") === f.mines.slice().sort(function (a, c) { return a - c; }).join(",");
@@ -1581,6 +1736,174 @@ $("hist-list").addEventListener("click", async function (e) {
   if (!box.classList.contains("hidden")) { box.classList.add("hidden"); return; }
   box.innerHTML = '<p class="s">Считаю…</p>'; box.classList.remove("hidden");
   try { box.innerHTML = await verifyBet(hist[i]); } catch (err) { box.innerHTML = '<p class="s">Не удалось проверить: ' + esc(err.message) + "</p>"; }
+});
+
+/* ---------- Плинко ---------- */
+var plinkoTables = null, plRows = 12, plRisk = "medium", plBalls = 0;
+var PW = 340, PH = 300, PTOP = 18, PBOT = 262;
+function multText(m) { return m >= 100 ? String(Math.round(m)) : m >= 10 ? String(Math.round(m * 10) / 10).replace(".", ",") : String(m).replace(".", ","); }
+function multColor(m) { return m >= 10 ? "#FF4FA3" : m >= 2 ? "#C6FF3D" : m >= 1 ? "#7C9A2E" : "#262633"; }
+function plGeom() { var dx = PW / (plRows + 2), dy = (PBOT - PTOP - 20) / plRows; return { dx: dx, dy: dy, cx: PW / 2 }; }
+function renderPlinkoBoard() {
+  if (!plinkoTables) return;
+  var g = plGeom(), html = "", table = plinkoTables[plRows][plRisk];
+  for (var i = 0; i < plRows; i++) {
+    for (var j = 0; j < i + 3; j++) {
+      html += '<circle cx="' + (g.cx + (j - (i + 2) / 2) * g.dx) + '" cy="' + (PTOP + 14 + i * g.dy) + '" r="' + Math.max(2, g.dx * 0.12) + '" fill="#A3A3B8"/>';
+    }
+  }
+  var fs = plRows >= 16 ? 7 : plRows >= 12 ? 8.5 : 11;
+  table.forEach(function (m, k) {
+    var x = g.cx + (k - plRows / 2) * g.dx;
+    html += '<g id="pl-slot-' + k + '"><rect x="' + (x - g.dx / 2 + 1) + '" y="' + PBOT + '" width="' + (g.dx - 2) + '" height="22" rx="5" fill="' + multColor(m) + '"/>' +
+      '<text x="' + x + '" y="' + (PBOT + 14.5) + '" text-anchor="middle" font-size="' + fs + '" font-weight="800" fill="' + (m >= 1 ? "#0B0B12" : "#F5F5FA") + '">' + multText(m) + "</text></g>";
+  });
+  html += '<g id="pl-balls"></g>';
+  $("pl-svg").innerHTML = html;
+}
+function segValue(id) { var b = $(id).querySelector(".on"); return b ? b.dataset.v : null; }
+document.addEventListener("click", function (e) {
+  var b = e.target.closest(".seg button");
+  if (!b) return;
+  var seg = b.parentNode;
+  if (seg.id === "pl-rows" || seg.id === "pl-risk") { if (plBalls) { toast("Дождись, пока шарики упадут"); return; } }
+  seg.querySelectorAll("button").forEach(function (x) { x.classList.toggle("on", x === b); });
+  if (seg.id === "pl-rows") { plRows = +b.dataset.v; renderPlinkoBoard(); }
+  if (seg.id === "pl-risk") { plRisk = b.dataset.v; renderPlinkoBoard(); }
+});
+function dropBall(path, slot, done) {
+  var g = plGeom(), pts = [{ x: g.cx, y: 0 }], rights = 0;
+  for (var i = 0; i < path.length; i++) {
+    pts.push({ x: g.cx + (rights - i / 2) * g.dx, y: PTOP + 14 + i * g.dy - g.dx * 0.32 });
+    rights += path[i];
+  }
+  pts.push({ x: g.cx + (slot - plRows / 2) * g.dx, y: PBOT + 6 });
+  var ball = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+  ball.setAttribute("r", Math.max(4, g.dx * 0.26)); ball.setAttribute("fill", "#FF4FA3");
+  $("pl-balls").appendChild(ball);
+  var seg = reduceMotion ? 1 : 140, t0 = performance.now();
+  function step(t) {
+    var p = (t - t0) / seg, i = Math.min(pts.length - 2, Math.floor(p)), f = Math.min(1, p - i);
+    var a = pts[i], c = pts[i + 1];
+    ball.setAttribute("cx", a.x + (c.x - a.x) * f);
+    ball.setAttribute("cy", a.y + (c.y - a.y) * f * f - Math.sin(f * Math.PI) * g.dy * 0.25);
+    if (p < pts.length - 1) requestAnimationFrame(step);
+    else { ball.remove(); var s = $("pl-slot-" + slot); if (s) restart(s, "pop", 450); done(); }
+  }
+  requestAnimationFrame(step);
+}
+var plHist = [];
+$("pl-btn").addEventListener("click", async function () {
+  var amt = readAmount("pl-amount");
+  if (!amt) { toast("Введи ставку"); return; }
+  if (amt > me.balance) { toast("Не хватает звёзд"); return; }
+  plBalls++;
+  var d = await api("/api/plinko", { amount: amt, rows: plRows, risk: plRisk });
+  if (!d.ok) { plBalls--; toast(d.error || "Ошибка"); return; }
+  me.balance = d.balance - d.payout;
+  $("pill-balance").textContent = fmt(me.balance);
+  dropBall(d.path, d.slot, function () {
+    plBalls--;
+    setBalance(d.balance);
+    plHist.unshift(d.mult); plHist = plHist.slice(0, 12);
+    $("pl-hist").innerHTML = plHist.map(function (m) { return '<span class="' + (m >= 1 ? "hi" : "") + '">×' + multText(m) + "</span>"; }).join("");
+    if (d.mult >= 5) { showGamePopup("×" + multText(d.mult) + " +" + fmt(d.payout) + " ★", true); confetti(document.querySelector("#v-plinko .stage"), 36); }
+  });
+});
+
+/* ---------- Монетка ---------- */
+var coinMult = 1.88, coinBusy = false, coinAngle = 0;
+function updCoin() { $("coin-win").textContent = fmt(Math.floor(readAmount("coin-amount") * coinMult)); }
+$("coin-amount").addEventListener("input", updCoin);
+$("coin-btn").addEventListener("click", async function () {
+  if (coinBusy) return;
+  var amt = readAmount("coin-amount"), side = segValue("coin-side");
+  if (!amt) { toast("Введи ставку"); return; }
+  if (amt > me.balance) { toast("Не хватает звёзд"); return; }
+  coinBusy = true; $("coin-result").textContent = "";
+  var d = await api("/api/coin", { amount: amt, side: side });
+  if (!d.ok) { coinBusy = false; toast(d.error || "Ошибка"); return; }
+  coinAngle = Math.ceil(coinAngle / 360) * 360 + 360 * 5 + (d.result === "tails" ? 180 : 0);
+  $("coin").style.transform = "rotateY(" + coinAngle + "deg)";
+  setTimeout(function () {
+    coinBusy = false; setBalance(d.balance);
+    var r = $("coin-result"), name = d.result === "heads" ? "Орёл" : "Решка";
+    if (d.win) { r.className = "res ok"; r.textContent = name + "! +" + fmt(d.payout - amt) + " звёзд"; showGamePopup("+" + fmt(d.payout - amt) + " ★", true); confetti($("coin"), 30); }
+    else { r.className = "res bad"; r.textContent = name + ". Не повезло: -" + fmt(amt); }
+    pop(r);
+  }, reduceMotion ? 50 : 1900);
+});
+
+/* ---------- Ежедневный бонус ---------- */
+var bonus = { sectors: [], available: false, left: 0, at: 0, angle: 0, busy: false };
+var WHEEL_COLORS = ["#1E1E2A", "#2A3A12", "#33333F", "#3A1A2C"];
+function wheelPath(a0, a1, r) {
+  var p = function (a) { return [150 + r * Math.sin(a), 150 - r * Math.cos(a)]; }, s = p(a0), e = p(a1);
+  return "M150 150 L" + s[0] + " " + s[1] + " A" + r + " " + r + " 0 " + (a1 - a0 > Math.PI ? 1 : 0) + " 1 " + e[0] + " " + e[1] + " Z";
+}
+function renderWheel() {
+  var total = bonus.sectors.reduce(function (a, s) { return a + s.weight; }, 0), a = 0, html = "";
+  bonus.mids = [];
+  bonus.sectors.forEach(function (s, i) {
+    var span = s.weight / total * Math.PI * 2, mid = a + span / 2;
+    bonus.mids.push(mid * 180 / Math.PI);
+    var col = s.amount === 0 ? "#3A1A2C" : WHEEL_COLORS[i % 3];
+    html += '<path d="' + wheelPath(a, a + span, 140) + '" fill="' + col + '" stroke="#0B0B12" stroke-width="2"/>';
+    if (span > 0.11) {
+      // Подпись вдоль радиуса: так она помещается даже в узкий сектор
+      var deg = mid * 180 / Math.PI;
+      html += '<text x="150" y="58" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="800" font-family="Unbounded, Inter, sans-serif" fill="' + (s.amount === 0 ? "#FF4FA3" : "#C6FF3D") + '" transform="rotate(' + deg + ' 150 150) rotate(-90 150 58)">' + fmt(s.amount) + "</text>";
+    }
+    a += span;
+  });
+  $("wheel-g").innerHTML = html;
+  $("bonus-odds").innerHTML = bonus.sectors.map(function (s) {
+    return '<span><b>' + fmt(s.amount) + ' ★</b>' + (Math.round(s.weight / total * 1000) / 10).toString().replace(".", ",") + " %</span>";
+  }).join("");
+}
+function bonusLeftText(sec) { var h = Math.floor(sec / 3600), m = Math.ceil((sec % 3600) / 60); if (m === 60) { h++; m = 0; } return (h ? h + " ч " : "") + m + " мин"; }
+function renderBonusStatus() {
+  var left = Math.max(0, Math.round((bonus.at - Date.now()) / 1000));
+  var ready = bonus.available || left === 0;
+  $("bonus-btn").className = ready ? "btn" : "btn idle";
+  $("bonus-btn").textContent = ready ? "Крутить" : "Через " + bonusLeftText(left);
+  $("bonus-banner-sub").textContent = ready ? "Доступен! Крути колесо" : "Следующий через " + bonusLeftText(left);
+  $("bonus-banner").classList.toggle("ready", ready);
+}
+async function loadBonus() {
+  var d = await api("/api/bonus/state");
+  if (!d.ok) return;
+  bonus.sectors = d.sectors; bonus.available = d.available; bonus.at = Date.now() + d.left_s * 1000;
+  renderWheel(); renderBonusStatus();
+}
+setInterval(function () { if (bonus.sectors.length) renderBonusStatus(); }, 30000);
+$("bonus-btn").addEventListener("click", async function () {
+  if (bonus.busy) return;
+  if (!bonus.available && bonus.at > Date.now()) { toast("Следующее вращение через " + bonusLeftText(Math.round((bonus.at - Date.now()) / 1000))); return; }
+  bonus.busy = true;
+  var d = await api("/api/bonus/spin");
+  if (!d.ok) { bonus.busy = false; toast(d.error || "Ошибка"); loadBonus(); return; }
+  bonus.angle = Math.ceil(bonus.angle / 360) * 360 + 360 * 6 + (360 - bonus.mids[d.index]);
+  $("wheel-g").style.transform = "rotate(" + bonus.angle + "deg)";
+  setTimeout(function () {
+    bonus.busy = false; bonus.available = false; bonus.at = Date.now() + d.left_s * 1000;
+    setBalance(d.balance); renderBonusStatus();
+    var r = $("bonus-result");
+    if (d.amount > 0) { r.className = "res ok"; r.textContent = "+" + fmt(d.amount) + " звёзд!"; showGamePopup("+" + fmt(d.amount) + " ★", true); confetti(document.querySelector(".wheel-wrap"), 40); }
+    else { r.className = "res bad"; r.textContent = "Пусто. Повезёт завтра!"; }
+    pop(r);
+  }, reduceMotion ? 50 : 5200);
+});
+
+/* ---------- Промокод ---------- */
+$("promo-go").addEventListener("click", async function () {
+  var code = $("promo-code").value.trim();
+  if (!code) { toast("Введи промокод"); return; }
+  var d = await api("/api/promo", { code: code });
+  if (!d.ok) { toast(d.error || "Ошибка"); return; }
+  $("promo-code").value = "";
+  setBalance(d.balance);
+  showGamePopup("+" + fmt(d.amount) + " ★", true);
 });
 
 load();

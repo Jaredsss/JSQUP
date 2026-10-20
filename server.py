@@ -107,6 +107,15 @@ db.execute(
 )
 db.execute("create index if not exists user_seeds_user on user_seeds(user_id, active)")
 db.execute(
+    "create table if not exists promos("
+    "code text primary key, amount integer, max_uses integer, uses integer not null default 0, "
+    "expires integer, active integer not null default 1, created integer)"
+)
+db.execute(
+    "create table if not exists promo_uses("
+    "code text, user_id integer, amount integer, created integer, primary key(code, user_id))"
+)
+db.execute(
     "create table if not exists rounds("
     "id integer primary key autoincrement, game text, seed text, hash text, result text, created integer, revealed integer)"
 )
@@ -128,6 +137,8 @@ SETTING_LIMITS = {
     "mines_edge": (0.0, 0.2),
     "crash_edge": (0.0, 0.2),
     "arena_fee": (0.0, 0.2),
+    "plinko_edge": (0.0, 0.2),
+    "coin_edge": (0.0, 0.2),
     "max_bet": (1, MAX_BET),
     "mines_max_bet": (1, MAX_BET),
     "max_win": (0, 100_000_000),
@@ -137,12 +148,17 @@ settings = {
     "mines_edge": MINES_EDGE,
     "crash_edge": CRASH_EDGE,
     "arena_fee": ARENA_FEE_PERCENT / 100,
+    "plinko_edge": 0.06,
+    "coin_edge": 0.06,
     "max_bet": MAX_BET,
     "mines_max_bet": MINES_MAX_BET,
     "max_win": 0,
+    "bonus_wheel": "0:30,10:25,25:20,50:13,100:7,250:4,500:1",
 }
 for _key, _value in db.execute("select key, value from settings").fetchall():
-    if _key in settings:
+    if _key == "bonus_wheel":
+        settings[_key] = _value
+    elif _key in settings:
         settings[_key] = float(_value) if _key.endswith(("_edge", "_fee")) else int(float(_value))
 
 
@@ -251,6 +267,7 @@ def player_stats(uid):
     return {
         "deposited": one("select coalesce(sum(amount), 0) from charges where user_id = ?"),
         "granted": one("select coalesce(sum(delta), 0) from admin_log where user_id = ?"),
+        "promo": one("select coalesce(sum(amount), 0) from promo_uses where user_id = ?"),
         "withdrawn": one("select coalesce(sum(amount), 0) from withdraw_requests where user_id = ? and status = 'paid'"),
         "bets": one("select count(*) from bets where user_id = ?"),
         "wagered": wagered,
@@ -280,6 +297,7 @@ def credit(uid, amount, charge_id):
             (charge_id, uid, amount, int(time.time())),
         )
     except sqlite3.IntegrityError:
+        db.rollback()
         return None
     db.execute("insert or ignore into users(id, name, username) values(?, '', '')", (uid,))
     db.execute("update users set balance = balance + ? where id = ?", (amount, uid))
@@ -529,6 +547,8 @@ async def handle_me(request):
             "mines_max_bet": settings["mines_max_bet"],
             "max_bet": settings["max_bet"],
             "max_win": settings["max_win"],
+            "plinko": plinko_tables(),
+            "coin_mult": coin_mult(),
             "is_admin": is_admin(uid),
             "subs": await missing_subs(request.app["session"], uid),
         }
@@ -1329,6 +1349,8 @@ def admin_state():
         "granted": one("select coalesce(sum(delta), 0) from admin_log"),
         "wagered": one("select coalesce(sum(stake), 0) from bets"),
         "profit": one("select coalesce(sum(stake - payout), 0) from bets"),
+        "promo": one("select coalesce(sum(amount), 0) from promo_uses"),
+        "bonus": one("select coalesce(sum(payout), 0) from bets where game = 'bonus'"),
     }
     withdrawals = [
         {"id": r[0], "user_id": r[1], "name": r[2], "username": r[3], "amount": r[4], "created": r[5], "player": player_stats(r[1])}
@@ -1346,7 +1368,7 @@ def admin_state():
     ]
     return {
         "ok": True, "stats": stats, "withdrawals": withdrawals, "channels": list_channels(),
-        "log": log, "broadcast": broadcast, "settings": settings,
+        "log": log, "broadcast": broadcast, "settings": settings, "promos": promo_list(),
     }
 
 
@@ -1429,6 +1451,11 @@ async def handle_admin_settings(request):
         if not low <= value <= high:
             return jerr(f"{key}: допустимо от {low} до {high}")
         values[key] = round(value, 4) if isinstance(value, float) else value
+    if "bonus_wheel" in d:
+        wheel = str(d["bonus_wheel"]).replace(" ", "")
+        if not parse_wheel(wheel):
+            return jerr("Колесо: от 2 до 16 секторов вида сумма:вес через запятую, например 0:30,10:25")
+        values["bonus_wheel"] = wheel
     if not values:
         return jerr("Нечего сохранять")
     save_settings(values)
@@ -1490,6 +1517,7 @@ async def handle_admin_channel_add(request):
         )
         db.commit()
     except sqlite3.IntegrityError:
+        db.rollback()
         return jerr("Этот канал уже в списке")
     sub_cache.clear()
     data = admin_state()
@@ -1554,6 +1582,268 @@ async def handle_admin_broadcast(request):
     task.add_done_callback(request.app["bg"].discard)
     data = admin_state()
     data["message"] = "Рассылка запущена"
+    return web.json_response(data)
+
+
+# ---------- Плинко ----------
+# Базовые таблицы множителей; под маржу из админки они масштабируются так, чтобы возврат был ровно 1 - маржа
+PLINKO_BASE = {
+    8: {
+        "low": [5.6, 2.1, 1.1, 1, 0.5, 1, 1.1, 2.1, 5.6],
+        "medium": [13, 3, 1.3, 0.7, 0.4, 0.7, 1.3, 3, 13],
+        "high": [29, 4, 1.5, 0.3, 0.2, 0.3, 1.5, 4, 29],
+    },
+    12: {
+        "low": [10, 3, 1.6, 1.4, 1.1, 1, 0.5, 1, 1.1, 1.4, 1.6, 3, 10],
+        "medium": [33, 11, 4, 2, 1.1, 0.6, 0.3, 0.6, 1.1, 2, 4, 11, 33],
+        "high": [170, 24, 8.1, 2, 0.7, 0.2, 0.2, 0.2, 0.7, 2, 8.1, 24, 170],
+    },
+    16: {
+        "low": [16, 9, 2, 1.4, 1.4, 1.2, 1.1, 1, 0.5, 1, 1.1, 1.2, 1.4, 1.4, 2, 9, 16],
+        "medium": [110, 41, 10, 5, 3, 1.5, 1, 0.5, 0.3, 0.5, 1, 1.5, 3, 5, 10, 41, 110],
+        "high": [1000, 130, 26, 9, 4, 2, 0.2, 0.2, 0.2, 0.2, 0.2, 2, 4, 9, 26, 130, 1000],
+    },
+}
+
+
+def plinko_table(rows, risk, edge):
+    base = PLINKO_BASE[rows][risk]
+    rtp = sum(math.comb(rows, k) / 2 ** rows * m for k, m in enumerate(base))
+    scale = (1 - edge) / rtp
+    return [round(m * scale, 2) for m in base]
+
+
+def plinko_tables():
+    edge = settings["plinko_edge"]
+    return {rows: {risk: plinko_table(rows, risk, edge) for risk in PLINKO_BASE[rows]} for rows in PLINKO_BASE}
+
+
+async def handle_plinko(request):
+    user = require(request)
+    if not user:
+        return jerr("auth", 401)
+    blocked = await require_subscribed(request, user)
+    if blocked:
+        return blocked
+    d = await read_json(request)
+    uid = user["id"]
+    amount = parse_amount(d.get("amount"))
+    rows = to_int(d.get("rows"))
+    risk = d.get("risk")
+    if amount is None:
+        return jerr(f"Ставка от 1 до {settings['max_bet']}")
+    if rows not in PLINKO_BASE or risk not in ("low", "medium", "high"):
+        return jerr("Неверные параметры")
+    if get_balance(uid) < amount:
+        return jerr("Не хватает звёзд")
+    edge = settings["plinko_edge"]
+    table = plinko_table(rows, risk, edge)
+    floats, fair = next_roll(uid, rows)
+    path = [1 if f >= 0.5 else 0 for f in floats]
+    slot = sum(path)
+    mult = table[slot]
+    payout = cap_win(int(amount * mult), settings["max_win"])
+    if not play(uid, amount, payout):
+        return jerr("Не хватает звёзд")
+    fair.update(rows=rows, risk=risk, path=path, slot=slot, mult=mult, edge=edge, max_win=settings["max_win"])
+    log_bet(uid, "plinko", amount, payout, fair)
+    return web.json_response({"ok": True, "path": path, "slot": slot, "mult": mult, "payout": payout, "balance": get_balance(uid)})
+
+
+# ---------- Монетка ----------
+
+def coin_mult():
+    return round(2 * (1 - settings["coin_edge"]), 2)
+
+
+async def handle_coin(request):
+    user = require(request)
+    if not user:
+        return jerr("auth", 401)
+    blocked = await require_subscribed(request, user)
+    if blocked:
+        return blocked
+    d = await read_json(request)
+    uid = user["id"]
+    amount = parse_amount(d.get("amount"))
+    side = d.get("side")
+    if amount is None:
+        return jerr(f"Ставка от 1 до {settings['max_bet']}")
+    if side not in ("heads", "tails"):
+        return jerr("Выбери сторону")
+    mult = coin_mult()
+    if settings["max_win"] and int(amount * mult) > settings["max_win"]:
+        return jerr(f"Максимальный выигрыш за ставку — {settings['max_win']}. Уменьши ставку")
+    if get_balance(uid) < amount:
+        return jerr("Не хватает звёзд")
+    floats, fair = next_roll(uid, 1)
+    result = "heads" if floats[0] < 0.5 else "tails"
+    payout = int(amount * mult) if result == side else 0
+    if not play(uid, amount, payout):
+        return jerr("Не хватает звёзд")
+    fair.update(side=side, result=result, mult=mult)
+    log_bet(uid, "coin", amount, payout, fair)
+    return web.json_response({"ok": True, "result": result, "win": result == side, "payout": payout, "mult": mult, "balance": get_balance(uid)})
+
+
+# ---------- Ежедневный бонус ----------
+BONUS_COOLDOWN = 86400
+
+
+def parse_wheel(text):
+    sectors = []
+    for part in str(text).replace(" ", "").split(","):
+        m = re.fullmatch(r"(\d{1,6}):(\d{1,4})", part)
+        if not m:
+            return None
+        amount, weight = int(m.group(1)), int(m.group(2))
+        if weight < 1:
+            return None
+        sectors.append({"amount": amount, "weight": weight})
+    return sectors if 2 <= len(sectors) <= 16 else None
+
+
+def bonus_next_at(uid):
+    last = db.execute("select max(created) from bets where user_id = ? and game = 'bonus'", (uid,)).fetchone()[0]
+    return (last + BONUS_COOLDOWN) if last else 0
+
+
+async def handle_bonus_state(request):
+    user = require(request)
+    if not user:
+        return jerr("auth", 401)
+    next_at = bonus_next_at(user["id"])
+    return web.json_response({
+        "ok": True, "sectors": parse_wheel(settings["bonus_wheel"]),
+        "available": next_at <= time.time(), "left_s": max(0, int(next_at - time.time())),
+    })
+
+
+async def handle_bonus_spin(request):
+    user = require(request)
+    if not user:
+        return jerr("auth", 401)
+    blocked = await require_subscribed(request, user)
+    if blocked:
+        return blocked
+    uid = user["id"]
+    next_at = bonus_next_at(uid)
+    if next_at > time.time():
+        return jerr("Колесо уже прокручено, приходи позже")
+    sectors = parse_wheel(settings["bonus_wheel"])
+    floats, fair = next_roll(uid, 1)
+    total = sum(s["weight"] for s in sectors)
+    pick = floats[0] * total
+    acc, index = 0, len(sectors) - 1
+    for i, s in enumerate(sectors):
+        acc += s["weight"]
+        if pick < acc:
+            index = i
+            break
+    amount = sectors[index]["amount"]
+    play(uid, 0, amount)
+    fair.update(sectors=sectors, index=index)
+    log_bet(uid, "bonus", 0, amount, fair)
+    return web.json_response({"ok": True, "index": index, "amount": amount, "balance": get_balance(uid), "left_s": BONUS_COOLDOWN})
+
+
+# ---------- Промокоды ----------
+PROMO_ATTEMPTS = 10
+promo_fails = {}
+
+
+async def handle_promo(request):
+    user = require(request)
+    if not user:
+        return jerr("auth", 401)
+    blocked = await require_subscribed(request, user)
+    if blocked:
+        return blocked
+    uid = user["id"]
+    d = await read_json(request)
+    now = time.time()
+    fails = [t for t in promo_fails.get(uid, []) if now - t < 3600]
+    promo_fails[uid] = fails
+    if len(fails) >= PROMO_ATTEMPTS:
+        return jerr("Слишком много неверных кодов, попробуй через час")
+    code = str(d.get("code", "")).strip().upper()
+    row = db.execute(
+        "select amount, max_uses, uses, expires, active from promos where code = ?", (code,)
+    ).fetchone() if re.fullmatch(r"[A-Z0-9_-]{3,32}", code) else None
+    if not row or not row[4]:
+        fails.append(now)
+        return jerr("Такого промокода нет")
+    amount, max_uses, uses, expires = row[0], row[1], row[2], row[3]
+    if expires and expires < now:
+        return jerr("Срок действия промокода истёк")
+    if max_uses and uses >= max_uses:
+        return jerr("Промокод закончился")
+    try:
+        db.execute("insert into promo_uses(code, user_id, amount, created) values(?, ?, ?, ?)", (code, uid, amount, int(now)))
+    except sqlite3.IntegrityError:
+        db.rollback()
+        return jerr("Ты уже активировал этот промокод")
+    cur = db.execute(
+        "update promos set uses = uses + 1 where code = ? and (max_uses = 0 or uses < max_uses)", (code,)
+    )
+    if cur.rowcount != 1:
+        db.rollback()
+        return jerr("Промокод закончился")
+    db.execute("update users set balance = balance + ? where id = ?", (amount, uid))
+    db.commit()
+    return web.json_response({"ok": True, "amount": amount, "balance": get_balance(uid)})
+
+
+def promo_list():
+    rows = db.execute(
+        "select code, amount, max_uses, uses, expires, active, created from promos order by created desc limit 30"
+    ).fetchall()
+    return [
+        {"code": r[0], "amount": r[1], "max_uses": r[2], "uses": r[3], "expires": r[4], "active": bool(r[5]), "created": r[6]}
+        for r in rows
+    ]
+
+
+async def handle_admin_promo_create(request):
+    if not require_admin(request):
+        return jerr("Нет доступа", 403)
+    d = await read_json(request)
+    code = str(d.get("code", "")).strip().upper() or secrets.token_hex(4).upper()
+    amount = to_int(d.get("amount"))
+    max_uses = to_int(d.get("max_uses")) or 0
+    days = to_int(d.get("days")) or 0
+    if not re.fullmatch(r"[A-Z0-9_-]{3,32}", code):
+        return jerr("Код: латиница, цифры, _ и -, от 3 до 32 символов")
+    if amount is None or not 1 <= amount <= 1_000_000:
+        return jerr("Сумма от 1 до 1 000 000")
+    if not 0 <= max_uses <= 1_000_000 or not 0 <= days <= 3650:
+        return jerr("Неверное число активаций или дней")
+    now = int(time.time())
+    try:
+        db.execute(
+            "insert into promos(code, amount, max_uses, uses, expires, active, created) values(?, ?, ?, 0, ?, 1, ?)",
+            (code, amount, max_uses, now + days * 86400 if days else 0, now),
+        )
+        db.commit()
+    except sqlite3.IntegrityError:
+        db.rollback()
+        return jerr("Такой код уже есть")
+    data = admin_state()
+    data["message"] = f"Промокод {code} создан"
+    return web.json_response(data)
+
+
+async def handle_admin_promo_toggle(request):
+    if not require_admin(request):
+        return jerr("Нет доступа", 403)
+    d = await read_json(request)
+    code = str(d.get("code", "")).strip().upper()
+    cur = db.execute("update promos set active = 1 - active where code = ?", (code,))
+    db.commit()
+    if cur.rowcount != 1:
+        return jerr("Промокод не найден")
+    data = admin_state()
+    data["message"] = "Готово"
     return web.json_response(data)
 
 
@@ -1777,6 +2067,13 @@ app.router.add_post("/api/subs/check", handle_subs_check)
 app.router.add_post("/api/fair", handle_fair)
 app.router.add_post("/api/fair/seed", handle_fair_seed)
 app.router.add_post("/api/history", handle_history)
+app.router.add_post("/api/plinko", handle_plinko)
+app.router.add_post("/api/coin", handle_coin)
+app.router.add_post("/api/bonus/state", handle_bonus_state)
+app.router.add_post("/api/bonus/spin", handle_bonus_spin)
+app.router.add_post("/api/promo", handle_promo)
+app.router.add_post("/api/admin/promo/create", handle_admin_promo_create)
+app.router.add_post("/api/admin/promo/toggle", handle_admin_promo_toggle)
 app.router.add_post("/api/admin/state", handle_admin_state)
 app.router.add_post("/api/admin/users", handle_admin_users)
 app.router.add_post("/api/admin/balance", handle_admin_balance)
