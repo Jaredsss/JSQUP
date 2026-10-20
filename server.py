@@ -22,6 +22,10 @@ WEBAPP_URL = os.environ.get("WEBAPP_URL", "")
 PORT = int(os.environ.get("PORT", "8080"))
 HOST = os.environ.get("HOST", "127.0.0.1")
 DEV_USER_ID = os.environ.get("DEV_USER_ID", "")
+if DEV_USER_ID and WEBAPP_URL:
+    # Режим разработчика пускает без авторизации, на боевом сервере он запрещён
+    print("ВНИМАНИЕ: DEV_USER_ID игнорируется, потому что задан WEBAPP_URL")
+    DEV_USER_ID = ""
 TG_API_BASE = os.environ.get("TG_API_BASE", "https://oceanment.space").rstrip("/")
 API = f"{TG_API_BASE}/bot{TOKEN}"
 FILE_API = f"{TG_API_BASE}/file/bot{TOKEN}"
@@ -277,7 +281,7 @@ def check_session(value):
     if not hmac.compare_digest(sig, parts[2]) or time.time() - ts > SESSION_TTL:
         return None
     row = db.execute("select name, username from users where id = ?", (uid,)).fetchone()
-    return {"id": uid, "first_name": (row[0] if row and row[0] else "Игрок"), "username": (row[1] if row and row[1] else "")}
+    return {"id": uid, "first_name": (row[0] if row and row[0] else "Игрок"), "username": (row[1] if row and row[1] else ""), "session_ts": ts}
 
 
 def auth(request):
@@ -320,10 +324,20 @@ async def read_json(request):
         return {}
 
 
+def to_int(value):
+    # Только целые числа: без bool, дробей, Infinity и строк вроде "1e9"
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and re.fullmatch(r"-?[0-9]{1,15}", value.strip()):
+        return int(value.strip())
+    return None
+
+
 def parse_amount(value):
-    try:
-        amount = int(value)
-    except (TypeError, ValueError):
+    amount = to_int(value)
+    if amount is None:
         return None
     if amount < 1 or amount > settings["max_bet"]:
         return None
@@ -439,9 +453,8 @@ async def handle_topup(request):
     if not user:
         return jerr("auth", 401)
     d = await read_json(request)
-    try:
-        amount = int(d.get("amount"))
-    except (TypeError, ValueError):
+    amount = to_int(d.get("amount"))
+    if amount is None:
         return jerr("Введи сумму числом")
     if amount < MIN_TOPUP or amount > MAX_TOPUP:
         return jerr(f"Сумма от {MIN_TOPUP} до {MAX_TOPUP}")
@@ -476,9 +489,8 @@ async def handle_withdraw(request):
     if blocked:
         return blocked
     d = await read_json(request)
-    try:
-        amount = int(d.get("amount"))
-    except (TypeError, ValueError):
+    amount = to_int(d.get("amount"))
+    if amount is None:
         return jerr("Введи количество звёзд")
     if amount < MIN_WITHDRAW:
         return jerr(f"Минимальный вывод: {MIN_WITHDRAW}")
@@ -557,10 +569,7 @@ async def handle_upgrader(request):
         return blocked
     d = await read_json(request)
     amount = parse_amount(d.get("amount"))
-    try:
-        chance = int(d.get("chance"))
-    except (TypeError, ValueError):
-        chance = 0
+    chance = to_int(d.get("chance")) or 0
     if amount is None:
         return jerr(f"Ставка от 1 до {settings['max_bet']}")
     if chance < 1 or chance > 80:
@@ -621,9 +630,8 @@ async def handle_mines_start(request):
         return blocked
     d = await read_json(request)
     amount = parse_amount(d.get("amount"))
-    try:
-        mines_count = int(d.get("mines"))
-    except (TypeError, ValueError):
+    mines_count = to_int(d.get("mines"))
+    if mines_count is None:
         mines_count = 3
     
     if amount is None or amount > settings["mines_max_bet"] or mines_count < 1 or mines_count > 24:
@@ -662,9 +670,8 @@ async def handle_mines_step(request):
         return jerr("auth", 401)
     uid = user["id"]
     d = await read_json(request)
-    try:
-        idx = int(d.get("index"))
-    except (TypeError, ValueError):
+    idx = to_int(d.get("index"))
+    if idx is None:
         return jerr("Неверная ячейка")
     game = active_mines.get(uid)
     if not game:
@@ -756,26 +763,34 @@ def gen_crash_point():
 
 async def crash_loop():
     while True:
-        point = gen_crash_point()
-        crash.update(round=crash["round"] + 1, phase="waiting", wait_until=time.time() + CRASH_WAIT, crash_point=point, crash_ms=math.log(point) / CRASH_K * 1000.0, bets={}, max_win=settings["max_win"])
-        await asyncio.sleep(CRASH_WAIT)
-        crash["phase"] = "running"
-        crash["started"] = time.time()
-        while True:
-            elapsed_ms = (time.time() - crash["started"]) * 1000.0
-            if elapsed_ms >= crash["crash_ms"]:
-                break
-            if crash["max_win"]:
-                crash_autocash(elapsed_ms)
-            await asyncio.sleep(min(0.1, (crash["crash_ms"] - elapsed_ms) / 1000.0))
-        crash["phase"] = "crashed"
-        lost = [(uid, b) for uid, b in crash["bets"].items() if b["cashed"] is None]
-        for uid, b in lost:
-            log_bet(uid, "crash", b["amount"], 0)
-        settle([b["hold"] for _, b in lost])
-        crash["history"].insert(0, point)
-        del crash["history"][14:]
-        await asyncio.sleep(CRASH_SHOW)
+        try:
+            await crash_round()
+        except Exception as e:
+            print("crash_loop error:", e)
+            await asyncio.sleep(1)
+
+
+async def crash_round():
+    point = gen_crash_point()
+    crash.update(round=crash["round"] + 1, phase="waiting", wait_until=time.time() + CRASH_WAIT, crash_point=point, crash_ms=math.log(point) / CRASH_K * 1000.0, bets={}, max_win=settings["max_win"])
+    await asyncio.sleep(CRASH_WAIT)
+    crash["phase"] = "running"
+    crash["started"] = time.time()
+    while True:
+        elapsed_ms = (time.time() - crash["started"]) * 1000.0
+        if elapsed_ms >= crash["crash_ms"]:
+            break
+        if crash["max_win"]:
+            crash_autocash(elapsed_ms)
+        await asyncio.sleep(min(0.1, (crash["crash_ms"] - elapsed_ms) / 1000.0))
+    crash["phase"] = "crashed"
+    lost = [(uid, b) for uid, b in crash["bets"].items() if b["cashed"] is None]
+    for uid, b in lost:
+        log_bet(uid, "crash", b["amount"], 0)
+    settle([b["hold"] for _, b in lost])
+    crash["history"].insert(0, point)
+    del crash["history"][14:]
+    await asyncio.sleep(CRASH_SHOW)
 
 def crash_cash(uid, b, m100):
     payout = cap_win(b["amount"] * m100 // 100, crash["max_win"])
@@ -1172,11 +1187,17 @@ async def handle_subs_check(request):
 broadcast = {"running": False, "sent": 0, "failed": 0, "total": 0}
 
 
+ADMIN_SESSION_TTL = 86400
+
+
 def require_admin(request):
     user = require(request)
-    if user and is_admin(user["id"]):
-        return user
-    return None
+    if not user or not is_admin(user["id"]):
+        return None
+    # Ссылка с ключом сессии живёт долго; для админки принимаем только свежую (или initData от Telegram)
+    if "session_ts" in user and time.time() - user["session_ts"] > ADMIN_SESSION_TTL:
+        return None
+    return user
 
 
 def admin_state():
@@ -1247,10 +1268,9 @@ async def handle_admin_balance(request):
     if not admin:
         return jerr("Нет доступа", 403)
     d = await read_json(request)
-    try:
-        uid = int(d.get("user_id"))
-        delta = int(d.get("delta"))
-    except (TypeError, ValueError):
+    uid = to_int(d.get("user_id"))
+    delta = to_int(d.get("delta"))
+    if uid is None or delta is None:
         return jerr("Неверные данные")
     if delta == 0 or abs(delta) > 10_000_000:
         return jerr("Сумма от 1 до 10 000 000")
@@ -1287,10 +1307,10 @@ async def handle_admin_settings(request):
     for key, (low, high) in SETTING_LIMITS.items():
         if key not in d:
             continue
-        try:
-            value = float(d[key]) if key.endswith(("_edge", "_fee")) else int(d[key])
-        except (TypeError, ValueError):
+        raw = d[key]
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)) or not math.isfinite(raw):
             return jerr(f"Неверное значение: {key}")
+        value = float(raw) if key.endswith(("_edge", "_fee")) else int(raw)
         if not low <= value <= high:
             return jerr(f"{key}: допустимо от {low} до {high}")
         values[key] = round(value, 4) if isinstance(value, float) else value
@@ -1306,9 +1326,8 @@ async def handle_admin_withdraw(request):
     if not require_admin(request):
         return jerr("Нет доступа", 403)
     d = await read_json(request)
-    try:
-        rid = int(d.get("id"))
-    except (TypeError, ValueError):
+    rid = to_int(d.get("id"))
+    if rid is None:
         return jerr("Неверная заявка")
     note = await resolve_withdraw(request.app["session"], rid, bool(d.get("approve")))
     data = admin_state()
@@ -1367,9 +1386,8 @@ async def handle_admin_channel_remove(request):
     if not require_admin(request):
         return jerr("Нет доступа", 403)
     d = await read_json(request)
-    try:
-        cid = int(d.get("id"))
-    except (TypeError, ValueError):
+    cid = to_int(d.get("id"))
+    if cid is None:
         return jerr("Неверный канал")
     db.execute("delete from channels where id = ?", (cid,))
     db.commit()
@@ -1427,10 +1445,26 @@ async def handle_admin_broadcast(request):
 async def handle_index(request):
     return web.FileResponse(BASE_DIR / "index.html")
 
+def valid_topup(payload, currency, amount, uid):
+    # Зачисляем только звёзды по счёту, который бот сам выставил этому игроку на эту сумму
+    parts = str(payload).split(":")
+    return (
+        currency == "XTR"
+        and len(parts) == 3 and parts[0] == "topup"
+        and parts[1] == str(uid)
+        and parts[2] == str(amount)
+        and isinstance(amount, int) and MIN_TOPUP <= amount <= MAX_TOPUP
+    )
+
+
 async def process_update(session, u):
     pcq = u.get("pre_checkout_query")
     if pcq:
-        await tg(session, "answerPreCheckoutQuery", pre_checkout_query_id=pcq["id"], ok=True)
+        ok = valid_topup(pcq.get("invoice_payload", ""), pcq.get("currency"), pcq.get("total_amount"), (pcq.get("from") or {}).get("id"))
+        params = {"pre_checkout_query_id": pcq["id"], "ok": ok}
+        if not ok:
+            params["error_message"] = "Счёт недействителен, создай новый в игре"
+        await tg(session, "answerPreCheckoutQuery", **params)
         return
     cb = u.get("callback_query")
     if cb:
@@ -1463,6 +1497,9 @@ async def process_update(session, u):
     if payment:
         uid = msg["from"]["id"]
         amount = payment["total_amount"]
+        if not valid_topup(payment.get("invoice_payload", ""), payment.get("currency"), amount, uid):
+            print("Отклонён подозрительный платёж:", uid, payment.get("currency"), amount, payment.get("invoice_payload"))
+            return
         charge_id = payment.get("telegram_payment_charge_id") or payment.get("provider_payment_charge_id")
         new_balance = credit(uid, amount, charge_id)
         if new_balance is not None:
