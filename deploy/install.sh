@@ -20,6 +20,15 @@ if [ -d "$DIR/.git" ]; then
   git -C "$DIR" fetch -q origin "$BRANCH"
   git -C "$DIR" checkout -q "$BRANCH"
   git -C "$DIR" reset -q --hard "origin/$BRANCH"
+elif [ -d "$DIR" ] && [ -n "$(ls -A "$DIR")" ]; then
+  # Папка есть, но не из git: сохраняем копию и подтягиваем код поверх, база и .env остаются
+  BACKUP="$DIR.bak-$(date +%Y%m%d-%H%M%S)"
+  echo "    $DIR уже существует, копия сохранена в $BACKUP"
+  cp -a "$DIR" "$BACKUP"
+  git -C "$DIR" init -q
+  git -C "$DIR" remote add origin "$REPO" 2>/dev/null || git -C "$DIR" remote set-url origin "$REPO"
+  git -C "$DIR" fetch -q origin "$BRANCH"
+  git -C "$DIR" checkout -q -f -B "$BRANCH" "origin/$BRANCH"
 else
   git clone -q -b "$BRANCH" "$REPO" "$DIR"
 fi
