@@ -116,6 +116,16 @@ db.execute(
     "code text, user_id integer, amount integer, created integer, primary key(code, user_id))"
 )
 db.execute(
+    "create table if not exists known_chats("
+    "chat_id text primary key, title text, username text, bot_status text, updated integer)"
+)
+db.execute(
+    "create table if not exists duels("
+    "id integer primary key autoincrement, creator_id integer, creator_name text, side text, amount integer, "
+    "hold_id integer, status text, joiner_id integer, joiner_name text, joiner_hold integer, round_id integer, "
+    "result text, winner_id integer, payout integer, fee integer, created integer, finished integer)"
+)
+db.execute(
     "create table if not exists rounds("
     "id integer primary key autoincrement, game text, seed text, hash text, result text, created integer, revealed integer)"
 )
@@ -139,6 +149,7 @@ SETTING_LIMITS = {
     "arena_fee": (0.0, 0.2),
     "plinko_edge": (0.0, 0.2),
     "coin_edge": (0.0, 0.2),
+    "duel_fee": (0.0, 0.2),
     "max_bet": (1, MAX_BET),
     "mines_max_bet": (1, MAX_BET),
     "max_win": (0, 100_000_000),
@@ -150,6 +161,7 @@ settings = {
     "arena_fee": ARENA_FEE_PERCENT / 100,
     "plinko_edge": 0.06,
     "coin_edge": 0.06,
+    "duel_fee": 0.05,
     "max_bet": MAX_BET,
     "mines_max_bet": MINES_MAX_BET,
     "max_win": 0,
@@ -340,7 +352,7 @@ def settle(hold_ids, credits=(), fee=0):
 
 
 def refund_holds():
-    rows = db.execute("select id, user_id, amount from holds where game != 'withdraw'").fetchall()
+    rows = db.execute("select id, user_id, amount from holds where game not in ('withdraw', 'duel')").fetchall()
     for hid, uid, amount in rows:
         db.execute("update users set balance = balance + ? where id = ?", (amount, uid))
         db.execute("delete from holds where id = ?", (hid,))
@@ -1367,7 +1379,7 @@ def admin_state():
         ).fetchall()
     ]
     return {
-        "ok": True, "stats": stats, "withdrawals": withdrawals, "channels": list_channels(),
+        "ok": True, "stats": stats, "withdrawals": withdrawals, "channels": list_channels(), "known_chats": known_chats(),
         "log": log, "broadcast": broadcast, "settings": settings, "promos": promo_list(),
     }
 
@@ -1487,29 +1499,83 @@ def parse_channel(text):
     return None
 
 
+def is_invite_link(text):
+    return bool(re.search(r"t\.me/(\+|joinchat/)", text))
+
+
+def remember_chat(chat, bot_status):
+    if not chat or chat.get("type") not in ("channel", "supergroup", "group"):
+        return
+    db.execute(
+        "insert into known_chats(chat_id, title, username, bot_status, updated) values(?, ?, ?, ?, ?) "
+        "on conflict(chat_id) do update set title = excluded.title, username = excluded.username, "
+        "bot_status = excluded.bot_status, updated = excluded.updated",
+        (str(chat["id"]), chat.get("title") or "", chat.get("username") or "", bot_status, int(time.time())),
+    )
+    db.commit()
+
+
+def known_chats():
+    added = {r[0] for r in db.execute("select chat from channels").fetchall()}
+    rows = db.execute(
+        "select chat_id, title, username, bot_status from known_chats order by updated desc limit 20"
+    ).fetchall()
+    return [
+        {"chat_id": r[0], "title": r[1], "username": r[2], "bot_status": r[3], "added": r[0] in added}
+        for r in rows
+    ]
+
+
+def find_known_chat(chat):
+    if chat.startswith("@"):
+        row = db.execute(
+            "select chat_id, title, username from known_chats where lower(username) = ?", (chat[1:].lower(),)
+        ).fetchone()
+    else:
+        row = db.execute("select chat_id, title, username from known_chats where chat_id = ?", (chat,)).fetchone()
+    return {"id": int(row[0]), "title": row[1], "username": row[2]} if row else None
+
+
 async def handle_admin_channel_add(request):
     if not require_admin(request):
         return jerr("Нет доступа", 403)
     d = await read_json(request)
-    chat = parse_channel(str(d.get("chat", "")))
+    raw = str(d.get("chat", "")).strip()
+    url = str(d.get("url", "")).strip()
+    if is_invite_link(raw):
+        return jerr("Это ссылка-приглашение. Вставь её во второе поле, а канал выбери из списка ниже или перешли боту любой пост из канала")
+    chat = parse_channel(raw)
     if not chat:
         return jerr("Укажи @username канала, ссылку t.me/... или ID вида -100…")
-    url = str(d.get("url", "")).strip()
     if url and not url.startswith("https://"):
         return jerr("Ссылка должна начинаться с https://")
     session = request.app["session"]
     r = await tg(session, "getChat", chat_id=chat)
-    if not r.get("ok"):
-        return jerr("Бот не видит канал. Добавь бота в канал администратором и попробуй снова")
-    info = r.get("result") or {}
+    if r.get("ok"):
+        info = r.get("result") or {}
+    else:
+        # Telegram не отдал канал (бывает у приватных каналов и прокси): берём то, что бот узнал сам
+        info = find_known_chat(chat)
+        if not info:
+            return jerr(
+                f"Telegram ответил: {r.get('description') or 'нет ответа'}. "
+                "Проверь, что бот — администратор канала, затем перешли боту любой пост из канала "
+                "или выбери канал из списка ниже"
+            )
+    if not url and info.get("username"):
+        url = f"https://t.me/{info['username']}"
+    if not url and info.get("invite_link"):
+        url = info["invite_link"]
     if not url:
-        url = f"https://t.me/{info['username']}" if info.get("username") else info.get("invite_link", "")
+        lr = await tg(session, "exportChatInviteLink", chat_id=info["id"])
+        if lr.get("ok"):
+            url = lr.get("result") or ""
     if not url:
-        return jerr("У канала нет публичной ссылки: укажи ссылку-приглашение")
+        return jerr("У канала нет публичной ссылки: вставь ссылку-приглашение во второе поле")
     warning = ""
     mr = await tg(session, "getChatMember", chat_id=info["id"], user_id=BOT_ID)
     if not mr.get("ok") or (mr.get("result") or {}).get("status") not in ("administrator", "creator"):
-        warning = "Бот не администратор канала: проверка подписки работать не будет"
+        warning = "Канал добавлен, но бот в нём не администратор: проверка подписки работать не будет"
     try:
         db.execute(
             "insert into channels(chat, title, url, created) values(?, ?, ?, ?)",
@@ -1684,6 +1750,154 @@ async def handle_coin(request):
     fair.update(side=side, result=result, mult=mult)
     log_bet(uid, "coin", amount, payout, fair)
     return web.json_response({"ok": True, "result": result, "win": result == side, "payout": payout, "mult": mult, "balance": get_balance(uid)})
+
+
+# ---------- Батлы в Монетке (игрок против игрока) ----------
+# Сид раунда создаётся вместе с батлом, его хэш виден всем сразу. Исход считается из сида
+# и клиент-сидов обоих игроков, поэтому заранее его не знает никто, включая сервер.
+DUEL_MAX_OPEN = 5
+
+
+def duel_row(r, uid):
+    return {
+        "id": r[0], "name": r[1], "side": r[2], "amount": r[3], "hash": r[4], "mine": r[5] == uid, "created": r[6],
+    }
+
+
+def duel_lists(uid):
+    open_rows = db.execute(
+        "select d.id, d.creator_name, d.side, d.amount, r.hash, d.creator_id, d.created from duels d "
+        "join rounds r on r.id = d.round_id where d.status = 'open' order by d.id desc limit 40"
+    ).fetchall()
+    mine = db.execute(
+        "select id, creator_id, creator_name, joiner_name, side, amount, result, winner_id, payout, finished from duels "
+        "where status = 'done' and (creator_id = ? or joiner_id = ?) order by finished desc limit 10",
+        (uid, uid),
+    ).fetchall()
+    return {
+        "open": [duel_row(r, uid) for r in open_rows],
+        "recent": [
+            {"id": r[0], "rival": r[3] if r[1] == uid else r[2], "side": r[4] if r[1] == uid else ("tails" if r[4] == "heads" else "heads"),
+             "amount": r[5], "result": r[6], "won": r[7] == uid, "payout": r[8], "finished": r[9]}
+            for r in mine
+        ],
+        "fee_percent": round(settings["duel_fee"] * 100, 1),
+    }
+
+
+async def handle_duel_list(request):
+    user = require(request)
+    if not user:
+        return jerr("auth", 401)
+    return web.json_response({"ok": True, **duel_lists(user["id"]), "balance": get_balance(user["id"])})
+
+
+async def handle_duel_create(request):
+    user = require(request)
+    if not user:
+        return jerr("auth", 401)
+    blocked = await require_subscribed(request, user)
+    if blocked:
+        return blocked
+    d = await read_json(request)
+    uid = user["id"]
+    amount = parse_amount(d.get("amount"))
+    side = d.get("side")
+    if amount is None:
+        return jerr(f"Ставка от 1 до {settings['max_bet']}")
+    if side not in ("heads", "tails"):
+        return jerr("Выбери сторону")
+    open_count = db.execute("select count(*) from duels where creator_id = ? and status = 'open'", (uid,)).fetchone()[0]
+    if open_count >= DUEL_MAX_OPEN:
+        return jerr(f"Можно держать не больше {DUEL_MAX_OPEN} открытых батлов")
+    hold = place_hold(uid, "duel", amount)
+    if hold is None:
+        return jerr("Не хватает звёзд")
+    round_id, _, _ = new_round("duel")
+    db.execute(
+        "insert into duels(creator_id, creator_name, side, amount, hold_id, status, round_id, created) "
+        "values(?, ?, ?, ?, ?, 'open', ?, ?)",
+        (uid, full_name(user), side, amount, hold, round_id, int(time.time())),
+    )
+    db.commit()
+    return web.json_response({"ok": True, **duel_lists(uid), "balance": get_balance(uid), "message": "Батл создан, ждём соперника"})
+
+
+async def handle_duel_cancel(request):
+    user = require(request)
+    if not user:
+        return jerr("auth", 401)
+    d = await read_json(request)
+    uid = user["id"]
+    did = to_int(d.get("id"))
+    row = db.execute(
+        "select hold_id, amount, round_id from duels where id = ? and creator_id = ? and status = 'open'", (did, uid)
+    ).fetchone()
+    if not row:
+        return jerr("Батл уже начался или не найден")
+    db.execute("update duels set status = 'cancelled', finished = ? where id = ?", (int(time.time()), did))
+    reveal_round(row[2], {"cancelled": True})
+    settle([row[0]], [(uid, row[1])])
+    return web.json_response({"ok": True, **duel_lists(uid), "balance": get_balance(uid), "message": "Батл отменён, ставка вернулась"})
+
+
+async def handle_duel_join(request):
+    user = require(request)
+    if not user:
+        return jerr("auth", 401)
+    blocked = await require_subscribed(request, user)
+    if blocked:
+        return blocked
+    d = await read_json(request)
+    uid = user["id"]
+    did = to_int(d.get("id"))
+    row = db.execute(
+        "select creator_id, creator_name, side, amount, hold_id, round_id from duels where id = ? and status = 'open'", (did,)
+    ).fetchone()
+    if not row:
+        return jerr("Батл уже занят или отменён")
+    creator_id, creator_name, side, amount, creator_hold, round_id = row
+    if creator_id == uid:
+        return jerr("Нельзя вступить в свой батл")
+    hold = place_hold(uid, "duel", amount)
+    if hold is None:
+        return jerr("Не хватает звёзд")
+    cur = db.execute("update duels set status = 'playing' where id = ? and status = 'open'", (did,))
+    if cur.rowcount != 1:
+        db.commit()
+        settle([hold], [(uid, amount)])
+        return jerr("Батл уже занят")
+    seed = db.execute("select seed from rounds where id = ?", (round_id,)).fetchone()[0]
+    cs_creator, cs_joiner = active_seed(creator_id)[3], active_seed(uid)[3]
+    result = "heads" if round_float(seed, f"duel:{cs_creator}:{cs_joiner}") < 0.5 else "tails"
+    winner = creator_id if result == side else uid
+    pot = amount * 2
+    fee = int(pot * settings["duel_fee"])
+    payout = pot - fee
+    now = int(time.time())
+    db.execute(
+        "update duels set status = 'done', joiner_id = ?, joiner_name = ?, joiner_hold = ?, result = ?, "
+        "winner_id = ?, payout = ?, fee = ?, finished = ? where id = ?",
+        (uid, full_name(user), hold, result, winner, payout, fee, now, did),
+    )
+    reveal_round(round_id, {"result": result, "creator_side": side, "creator_seed": cs_creator, "joiner_seed": cs_joiner, "fee": fee})
+    joiner_side = "tails" if side == "heads" else "heads"
+    for player, player_side in ((creator_id, side), (uid, joiner_side)):
+        log_bet(player, "duel", amount, payout if player == winner else 0, {"round_id": round_id, "duel_id": did, "side": player_side})
+    settle([creator_hold, hold], [(winner, payout)], fee)
+    side_name = {"heads": "орёл", "tails": "решка"}
+    try:
+        await tg(request.app["session"], "sendMessage", chat_id=creator_id, text=(
+            f"Батл #{did}: {full_name(user)} принял вызов на {amount} звёзд.\n"
+            f"Выпал{'' if result == 'heads' else 'а'} {side_name[result]}. "
+            + (f"Ты выиграл {payout} звёзд!" if winner == creator_id else "В этот раз не повезло.")
+        ))
+    except Exception as e:
+        print("duel notify error:", e)
+    return web.json_response({
+        "ok": True, "result": result, "side": joiner_side, "win": winner == uid, "payout": payout if winner == uid else 0,
+        "rival": creator_name, **duel_lists(uid), "balance": get_balance(uid),
+    })
 
 
 # ---------- Ежедневный бонус ----------
@@ -1975,8 +2189,25 @@ async def process_update(session, u):
             note = "Нет доступа"
         await tg(session, "answerCallbackQuery", callback_query_id=cb["id"], text=note)
         return
+    mcm = u.get("my_chat_member")
+    if mcm:
+        # Бота добавили в канал или поменяли его права — запоминаем, чтобы канал можно было выбрать в админке
+        remember_chat(mcm.get("chat"), (mcm.get("new_chat_member") or {}).get("status", ""))
+        return
     msg = u.get("message")
     if not msg:
+        return
+    fwd = (msg.get("forward_origin") or {}).get("chat") or msg.get("forward_from_chat")
+    if fwd and is_admin((msg.get("from") or {}).get("id")):
+        mr = await tg(session, "getChatMember", chat_id=fwd["id"], user_id=BOT_ID)
+        status = (mr.get("result") or {}).get("status", "") if mr.get("ok") else ""
+        remember_chat(fwd, status)
+        ok = status in ("administrator", "creator")
+        await tg(session, "sendMessage", chat_id=msg["chat"]["id"], text=(
+            f"Канал «{fwd.get('title', '')}» (ID {fwd['id']}) найден.\n"
+            + ("Бот в нём администратор — добавь канал в админке, он уже в списке." if ok
+               else "Бот в нём НЕ администратор: назначь его админом, иначе проверка подписки не сработает.")
+        ))
         return
     chat_id = msg["chat"]["id"]
     remember_name(msg.get("from"))
@@ -2018,7 +2249,7 @@ async def poll(app):
     offset = 0
     while True:
         try:
-            r = await tg(session, "getUpdates", offset=offset, timeout=25, allowed_updates=["message", "pre_checkout_query", "callback_query"])
+            r = await tg(session, "getUpdates", offset=offset, timeout=25, allowed_updates=["message", "pre_checkout_query", "callback_query", "my_chat_member"])
             for u in r.get("result", []):
                 offset = u["update_id"] + 1
                 await process_update(session, u)
@@ -2069,6 +2300,10 @@ app.router.add_post("/api/fair/seed", handle_fair_seed)
 app.router.add_post("/api/history", handle_history)
 app.router.add_post("/api/plinko", handle_plinko)
 app.router.add_post("/api/coin", handle_coin)
+app.router.add_post("/api/duel/list", handle_duel_list)
+app.router.add_post("/api/duel/create", handle_duel_create)
+app.router.add_post("/api/duel/join", handle_duel_join)
+app.router.add_post("/api/duel/cancel", handle_duel_cancel)
 app.router.add_post("/api/bonus/state", handle_bonus_state)
 app.router.add_post("/api/bonus/spin", handle_bonus_spin)
 app.router.add_post("/api/promo", handle_promo)
