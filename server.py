@@ -8,6 +8,7 @@ import math
 import os
 import random
 import re
+import secrets
 import sqlite3
 import time
 import unicodedata
@@ -97,6 +98,18 @@ db.execute(
     "id integer primary key autoincrement, user_id integer, game text, stake integer, payout integer, created integer)"
 )
 db.execute("create index if not exists bets_user on bets(user_id)")
+if "fair" not in [r[1] for r in db.execute("pragma table_info(bets)").fetchall()]:
+    db.execute("alter table bets add column fair text")
+db.execute(
+    "create table if not exists user_seeds("
+    "id integer primary key autoincrement, user_id integer, server_seed text, server_hash text, "
+    "client_seed text, nonce integer not null default 0, active integer, created integer, revealed integer)"
+)
+db.execute("create index if not exists user_seeds_user on user_seeds(user_id, active)")
+db.execute(
+    "create table if not exists rounds("
+    "id integer primary key autoincrement, game text, seed text, hash text, result text, created integer, revealed integer)"
+)
 db.execute("create table if not exists settings(key text primary key, value text)")
 db.execute(
     "create table if not exists channels("
@@ -147,11 +160,85 @@ def cap_win(payout, max_win):
     return min(payout, max_win) if max_win else payout
 
 
-def log_bet(uid, game, stake, payout):
+def log_bet(uid, game, stake, payout, fair=None):
     db.execute(
-        "insert into bets(user_id, game, stake, payout, created) values(?, ?, ?, ?, ?)",
-        (uid, game, stake, payout, int(time.time())),
+        "insert into bets(user_id, game, stake, payout, created, fair) values(?, ?, ?, ?, ?, ?)",
+        (uid, game, stake, payout, int(time.time()), json.dumps(fair) if fair else None),
     )
+    db.commit()
+
+
+# ---------- Доказуемо честная игра ----------
+# Результат = HMAC-SHA256(server_seed, сообщение). Хэш server_seed игрок видит заранее,
+# сам server_seed раскрывается после смены сидов (Апгрейдер, Мины) или после раунда (Краш, Арена).
+
+def sha256_hex(text):
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def bytes_to_floats(digest):
+    return [
+        digest[i] / 256 + digest[i + 1] / 256 ** 2 + digest[i + 2] / 256 ** 3 + digest[i + 3] / 256 ** 4
+        for i in range(0, 32, 4)
+    ]
+
+
+def fair_floats(server_seed, client_seed, nonce, count):
+    out, cursor = [], 0
+    while len(out) < count:
+        msg = f"{client_seed}:{nonce}:{cursor}".encode()
+        out += bytes_to_floats(hmac.new(server_seed.encode(), msg, hashlib.sha256).digest())
+        cursor += 1
+    return out[:count]
+
+
+def round_float(seed, game):
+    return bytes_to_floats(hmac.new(seed.encode(), game.encode(), hashlib.sha256).digest())[0]
+
+
+def active_seed(uid):
+    row = db.execute(
+        "select id, server_seed, server_hash, client_seed, nonce from user_seeds where user_id = ? and active = 1",
+        (uid,),
+    ).fetchone()
+    if row:
+        return row
+    return create_seed(uid, secrets.token_hex(8))
+
+
+def create_seed(uid, client_seed):
+    server_seed = secrets.token_hex(32)
+    server_hash = sha256_hex(server_seed)
+    cur = db.execute(
+        "insert into user_seeds(user_id, server_seed, server_hash, client_seed, nonce, active, created) "
+        "values(?, ?, ?, ?, 0, 1, ?)",
+        (uid, server_seed, server_hash, client_seed, int(time.time())),
+    )
+    db.commit()
+    return cur.lastrowid, server_seed, server_hash, client_seed, 0
+
+
+def next_roll(uid, count):
+    # Берёт текущие сиды игрока, увеличивает nonce и возвращает случайные числа для ставки
+    seed_id, server_seed, server_hash, client_seed, nonce = active_seed(uid)
+    db.execute("update user_seeds set nonce = nonce + 1 where id = ?", (seed_id,))
+    db.commit()
+    floats = fair_floats(server_seed, client_seed, nonce, count)
+    return floats, {"seed_id": seed_id, "hash": server_hash, "client_seed": client_seed, "nonce": nonce}
+
+
+def new_round(game):
+    seed = secrets.token_hex(32)
+    cur = db.execute(
+        "insert into rounds(game, seed, hash, created, revealed) values(?, ?, ?, ?, 0)",
+        (game, seed, sha256_hex(seed), int(time.time())),
+    )
+    db.commit()
+    return cur.lastrowid, seed, sha256_hex(seed)
+
+
+def reveal_round(round_id, result):
+    db.execute("update rounds set revealed = 1, result = ? where id = ?", (json.dumps(result), round_id))
     db.commit()
 
 
@@ -579,13 +666,17 @@ async def handle_upgrader(request):
     if settings["max_win"] and potential > settings["max_win"]:
         return jerr(f"Максимальный выигрыш за ставку — {settings['max_win']}. Уменьши ставку или увеличь шанс")
 
-    roll = rng.random() * 100
+    if get_balance(user["id"]) < amount:
+        return jerr("Не хватает звёзд")
+    floats, fair = next_roll(user["id"], 1)
+    roll = floats[0] * 100
     win = roll < chance
     payout = potential if win else 0
     if not play(user["id"], amount, payout):
         return jerr("Не хватает звёзд")
-    log_bet(user["id"], "upgrader", amount, payout)
-    return web.json_response({"ok": True, "win": win, "roll": roll, "payout": payout, "edge": edge, "balance": get_balance(user["id"])})
+    fair.update(roll=roll, chance=chance, edge=edge)
+    log_bet(user["id"], "upgrader", amount, payout, fair)
+    return web.json_response({"ok": True, "win": win, "roll": roll, "payout": payout, "edge": edge, "fair": fair, "balance": get_balance(user["id"])})
 
 
 active_mines = {}
@@ -605,6 +696,15 @@ def calc_mines_mult(opened, total_mines, edge):
     return round(max(1.0, mult * (1 - edge)), 2)
 
 
+def mines_fair(game):
+    return {**game["fair"], "opened": list(game["opened_cells"])}
+
+
+def mines_from_floats(floats, count):
+    cells = list(range(25))
+    return sorted(cells.pop(int(f * (25 - k))) for k, f in enumerate(floats[:count]))
+
+
 def mines_payout(game, opened):
     return cap_win(int(game["amount"] * calc_mines_mult(opened, game["mines_count"], game["edge"])), game["max_win"])
 
@@ -616,7 +716,7 @@ def finish_mines(uid):
         return
     if game["opened_cells"]:
         payout = mines_payout(game, len(game["opened_cells"]))
-        log_bet(uid, "mines", game["amount"], payout)
+        log_bet(uid, "mines", game["amount"], payout, mines_fair(game))
     else:
         payout = game["amount"]
     settle([game["hold_id"]], [(uid, payout)])
@@ -643,9 +743,10 @@ async def handle_mines_start(request):
     if hold_id is None:
         return jerr("Не хватает звёзд")
         
-    all_cells = list(range(25))
-    mines_list = rng.sample(all_cells, mines_count)
-    
+    floats, fair = next_roll(uid, mines_count)
+    mines_list = mines_from_floats(floats, mines_count)
+    fair.update(mines_count=mines_count, mines=mines_list, edge=settings["mines_edge"])
+
     active_mines[uid] = {
         "amount": amount,
         "mines_count": mines_count,
@@ -654,6 +755,7 @@ async def handle_mines_start(request):
         "hold_id": hold_id,
         "edge": settings["mines_edge"],
         "max_win": settings["max_win"],
+        "fair": fair,
     }
 
     return web.json_response({
@@ -685,7 +787,7 @@ async def handle_mines_step(request):
 
     if hit_mine:
         hold_id = game["hold_id"]
-        log_bet(uid, "mines", game["amount"], 0)
+        log_bet(uid, "mines", game["amount"], 0, {**mines_fair(game), "hit": idx})
         settle([hold_id])
         mines = game["mines_list"]
         opened = game["opened_cells"]
@@ -708,7 +810,7 @@ async def handle_mines_step(request):
         capped = bool(game["max_win"]) and payout >= game["max_win"]
 
         if opened_count >= max_safe or capped:
-            log_bet(uid, "mines", game["amount"], payout)
+            log_bet(uid, "mines", game["amount"], payout, mines_fair(game))
             settle([game["hold_id"]], [(uid, payout)])
             del active_mines[uid]
             return web.json_response({
@@ -742,7 +844,7 @@ async def handle_mines_cashout(request):
         return jerr("Откройте хотя бы одну ячейку")
         
     payout = mines_payout(game, len(game["opened_cells"]))
-    log_bet(uid, "mines", game["amount"], payout)
+    log_bet(uid, "mines", game["amount"], payout, mines_fair(game))
     settle([game["hold_id"]], [(uid, payout)])
     del active_mines[uid]
     
@@ -753,12 +855,12 @@ async def handle_mines_cashout(request):
     })
 
 
-crash = {"round": 0, "phase": "waiting", "wait_until": 0.0, "started": 0.0, "crash_point": 1.0, "crash_ms": 0.0, "bets": {}, "history": [], "max_win": 0}
-arena = {"round": 0, "phase": "idle", "deadline": 0.0, "bets": {}, "winner": None, "seed": 0, "play_start": 0.0, "finish": 0.0, "last": None}
+crash = {"round": 0, "phase": "waiting", "wait_until": 0.0, "started": 0.0, "crash_point": 1.0, "crash_ms": 0.0, "bets": {}, "history": [], "max_win": 0, "round_id": 0, "seed": "", "hash": "", "edge": 0.0}
+arena = {"round_id": None, "fair_seed": "", "hash": "", "round": 0, "phase": "idle", "deadline": 0.0, "bets": {}, "winner": None, "seed": 0, "play_start": 0.0, "finish": 0.0, "last": None}
 
-def gen_crash_point():
-    r = rng.random()
-    point = (1.0 - settings["crash_edge"]) / (1.0 - r)
+def crash_point_from(seed, edge):
+    r = round_float(seed, "crash")
+    point = (1.0 - edge) / (1.0 - r)
     return max(1.0, min(CRASH_MAX, math.floor(point * 100) / 100))
 
 async def crash_loop():
@@ -771,7 +873,10 @@ async def crash_loop():
 
 
 async def crash_round():
-    point = gen_crash_point()
+    round_id, seed, seed_hash = new_round("crash")
+    edge = settings["crash_edge"]
+    point = crash_point_from(seed, edge)
+    crash.update(round_id=round_id, seed=seed, hash=seed_hash, edge=edge)
     crash.update(round=crash["round"] + 1, phase="waiting", wait_until=time.time() + CRASH_WAIT, crash_point=point, crash_ms=math.log(point) / CRASH_K * 1000.0, bets={}, max_win=settings["max_win"])
     await asyncio.sleep(CRASH_WAIT)
     crash["phase"] = "running"
@@ -784,9 +889,10 @@ async def crash_round():
             crash_autocash(elapsed_ms)
         await asyncio.sleep(min(0.1, (crash["crash_ms"] - elapsed_ms) / 1000.0))
     crash["phase"] = "crashed"
+    reveal_round(round_id, {"point": point, "edge": edge})
     lost = [(uid, b) for uid, b in crash["bets"].items() if b["cashed"] is None]
     for uid, b in lost:
-        log_bet(uid, "crash", b["amount"], 0)
+        log_bet(uid, "crash", b["amount"], 0, {"round_id": round_id})
     settle([b["hold"] for _, b in lost])
     crash["history"].insert(0, point)
     del crash["history"][14:]
@@ -794,7 +900,7 @@ async def crash_round():
 
 def crash_cash(uid, b, m100):
     payout = cap_win(b["amount"] * m100 // 100, crash["max_win"])
-    log_bet(uid, "crash", b["amount"], payout)
+    log_bet(uid, "crash", b["amount"], payout, {"round_id": crash["round_id"], "cashed": m100 / 100.0})
     settle([b["hold"]], [(uid, payout)])
     b["cashed"] = m100 / 100.0
     b["payout"] = payout
@@ -818,6 +924,7 @@ async def handle_crash_state(request):
     my = c["bets"].get(user["id"])
     out = {
         "ok": True, "round": c["round"], "phase": c["phase"], "k": CRASH_K, "max_win": c["max_win"],
+        "round_id": c["round_id"], "hash": c["hash"],
         "history": c["history"][:12], "balance": get_balance(user["id"]),
         "players": [{"name": b["name"], "amount": b["amount"], "cashed": b["cashed"], "payout": b["payout"], "me": uid == user["id"]} for uid, b in list(c["bets"].items())[:30]],
         "pot": sum(b["amount"] for b in c["bets"].values()),
@@ -829,6 +936,7 @@ async def handle_crash_state(request):
         out["elapsed_ms"] = int((now - c["started"]) * 1000)
     else:
         out["crash_point"] = c["crash_point"]
+        out["seed"] = c["seed"]
     return web.json_response(out)
 
 async def handle_crash_bet(request):
@@ -873,7 +981,7 @@ async def handle_crash_cashout(request):
     return web.json_response({"ok": True, "payout": payout, "mult": m100 / 100.0, "balance": get_balance(uid)})
 
 def arena_reset():
-    arena.update(phase="idle", deadline=0.0, bets={}, winner=None, seed=0, play_start=0.0)
+    arena.update(phase="idle", deadline=0.0, bets={}, winner=None, seed=0, play_start=0.0, round_id=None, fair_seed="", hash="")
 
 def ordered_bets():
     return sorted(arena["bets"].items(), key=lambda kv: (-kv[1]["amount"], kv[0]))
@@ -895,18 +1003,21 @@ def arena_step():
         if len(bets) < 2:
             holds = [h for b in bets.values() for h in b["holds"]]
             settle(holds, [(uid, b["amount"]) for uid, b in bets.items()])
-            a["last"] = {"round": a["round"], "players": list(bets.keys()), "refunded": True, "winner": None, "winner_id": None, "payout": 0}
+            reveal_round(a["round_id"], {"refunded": True})
+            a["last"] = {"round": a["round"], "players": list(bets.keys()), "refunded": True, "winner": None, "winner_id": None, "payout": 0, "round_id": a["round_id"]}
             arena_reset()
         else:
             pot = sum(b["amount"] for b in bets.values())
-            pick = rng.random() * pot
+            pick = round_float(a["fair_seed"], "arena") * pot
             acc = 0
             winner = None
-            for uid, b in ordered_bets():
+            ordered = ordered_bets()
+            for uid, b in ordered:
                 acc += b["amount"]
                 winner = uid
                 if pick < acc:
                     break
+            a["fair_result"] = {"players": [[uid, b["amount"]] for uid, b in ordered], "pick": pick, "winner": winner}
             a.update(phase="playing", play_start=now, seed=rng.randrange(1, 2**31), winner=winner)
     elif phase == "playing" and now >= a["play_start"] + ARENA_PLAY:
         bets = a["bets"]
@@ -914,10 +1025,11 @@ def arena_step():
         fee = int(pot * settings["arena_fee"])
         payout = pot - fee
         holds = [h for b in bets.values() for h in b["holds"]]
+        reveal_round(a["round_id"], {**a["fair_result"], "fee": fee})
         for uid, b in bets.items():
-            log_bet(uid, "arena", b["amount"], payout if uid == a["winner"] else 0)
+            log_bet(uid, "arena", b["amount"], payout if uid == a["winner"] else 0, {"round_id": a["round_id"]})
         settle(holds, [(a["winner"], payout)], fee)
-        a["last"] = {"round": a["round"], "players": list(bets.keys()), "refunded": False, "winner": bets[a["winner"]]["name"], "winner_id": a["winner"], "payout": payout}
+        a["last"] = {"round": a["round"], "players": list(bets.keys()), "refunded": False, "winner": bets[a["winner"]]["name"], "winner_id": a["winner"], "payout": payout, "round_id": a["round_id"]}
         a["phase"] = "finished"
         a["finish"] = now
     elif phase == "finished" and now >= a["finish"] + ARENA_SHOW:
@@ -935,6 +1047,7 @@ async def handle_arena_state(request):
         "players": [{"id": i, "name": b["name"], "amount": b["amount"]} for i, b in a["bets"].items()],
         "pot": sum(b["amount"] for b in a["bets"].values()),
         "my": a["bets"][uid]["amount"] if uid in a["bets"] else 0,
+        "round_id": a["round_id"], "hash": a["hash"],
         "last": a["last"], "play_ms": int(ARENA_PLAY * 1000), "fee_percent": round(settings["arena_fee"] * 100, 1),
     }
     if a["phase"] == "betting":
@@ -965,7 +1078,9 @@ async def handle_arena_bet(request):
     if hold is None:
         return jerr("Не хватает звёзд")
     if a["phase"] == "idle":
-        a.update(phase="betting", round=a["round"] + 1, deadline=now + ARENA_WAIT, bets={}, winner=None)
+        round_id, fair_seed, seed_hash = new_round("arena")
+        a.update(phase="betting", round=a["round"] + 1, deadline=now + ARENA_WAIT, bets={}, winner=None,
+                 round_id=round_id, fair_seed=fair_seed, hash=seed_hash)
     b = a["bets"].setdefault(uid, {"name": full_name(user), "amount": 0, "holds": []})
     b["amount"] += amount
     b["holds"].append(hold)
@@ -1442,6 +1557,93 @@ async def handle_admin_broadcast(request):
     return web.json_response(data)
 
 
+# ---------- Честность: сиды и история ставок ----------
+
+def seed_info(uid):
+    seed_id, _, server_hash, client_seed, nonce = active_seed(uid)
+    return {"hash": server_hash, "client_seed": client_seed, "nonce": nonce}
+
+
+async def handle_fair(request):
+    user = require(request)
+    if not user:
+        return jerr("auth", 401)
+    return web.json_response({"ok": True, "active": seed_info(user["id"])})
+
+
+async def handle_fair_seed(request):
+    user = require(request)
+    if not user:
+        return jerr("auth", 401)
+    uid = user["id"]
+    d = await read_json(request)
+    client_seed = str(d.get("client_seed", "")).strip() or secrets.token_hex(8)
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", client_seed):
+        return jerr("Клиент-сид: латиница, цифры, _ и -, до 64 символов")
+    if uid in active_mines:
+        return jerr("Сначала закончи игру в Минах")
+    seed_id, server_seed, server_hash, old_client, nonce = active_seed(uid)
+    db.execute("update user_seeds set active = 0, revealed = ? where id = ?", (int(time.time()), seed_id))
+    db.commit()
+    create_seed(uid, client_seed)
+    return web.json_response({
+        "ok": True,
+        "previous": {"server_seed": server_seed, "hash": server_hash, "client_seed": old_client, "nonce": nonce},
+        "active": seed_info(uid),
+    })
+
+
+async def handle_history(request):
+    user = require(request)
+    if not user:
+        return jerr("auth", 401)
+    uid = user["id"]
+    rows = db.execute(
+        "select id, game, stake, payout, created, fair from bets where user_id = ? order by id desc limit 50", (uid,)
+    ).fetchall()
+    seed_ids, round_ids = set(), set()
+    bets = []
+    for bid, game, stake, payout, created, fair in rows:
+        fair = json.loads(fair) if fair else None
+        if fair and "seed_id" in fair:
+            seed_ids.add(fair["seed_id"])
+        if fair and "round_id" in fair:
+            round_ids.add(fair["round_id"])
+        bets.append({"id": bid, "game": game, "stake": stake, "payout": payout, "created": created, "fair": fair})
+    seeds = {}
+    for sid in seed_ids:
+        row = db.execute("select server_seed, revealed from user_seeds where id = ? and user_id = ?", (sid, uid)).fetchone()
+        if row and row[1]:
+            seeds[sid] = row[0]
+    rounds = {}
+    for rid in round_ids:
+        row = db.execute("select game, seed, hash, result, revealed from rounds where id = ?", (rid,)).fetchone()
+        if row:
+            rounds[rid] = {
+                "game": row[0], "hash": row[2],
+                "seed": row[1] if row[4] else None,
+                "result": json.loads(row[3]) if row[4] and row[3] else None,
+            }
+    for b in bets:
+        f = b["fair"]
+        if not f:
+            continue
+        if "seed_id" in f:
+            f["server_seed"] = seeds.get(f["seed_id"])
+        if "round_id" in f:
+            r = rounds.get(f["round_id"])
+            res = r and r["result"]
+            if r and res and "players" in res:
+                # Чужие Telegram ID не показываем: для проверки хватает сумм по порядку
+                ids = [p[0] for p in res["players"]]
+                r = {**r, "result": {
+                    "amounts": [p[1] for p in res["players"]], "pick": res["pick"], "fee": res.get("fee", 0),
+                    "winner_index": ids.index(res["winner"]), "my_index": ids.index(uid) if uid in ids else -1,
+                }}
+            f["round"] = r
+    return web.json_response({"ok": True, "bets": bets, "active": seed_info(uid)})
+
+
 async def handle_index(request):
     return web.FileResponse(BASE_DIR / "index.html")
 
@@ -1572,6 +1774,9 @@ app.router.add_post("/api/mines/start", handle_mines_start)
 app.router.add_post("/api/mines/step", handle_mines_step)
 app.router.add_post("/api/mines/cashout", handle_mines_cashout)
 app.router.add_post("/api/subs/check", handle_subs_check)
+app.router.add_post("/api/fair", handle_fair)
+app.router.add_post("/api/fair/seed", handle_fair_seed)
+app.router.add_post("/api/history", handle_history)
 app.router.add_post("/api/admin/state", handle_admin_state)
 app.router.add_post("/api/admin/users", handle_admin_users)
 app.router.add_post("/api/admin/balance", handle_admin_balance)

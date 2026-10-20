@@ -212,6 +212,16 @@
   .list-row.col .acts { display: flex; gap: 8px; }
   .list-row.col .acts .sbtn { flex: 1; justify-content: center; }
   .warn, .list-row .s.warn { color: var(--pink); }
+  .mono { font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; font-size: 12px; color: var(--text); overflow-wrap: anywhere; margin: 0; line-height: 1.45; }
+  .linkbtn { display: block; margin: 8px auto 0; min-height: 44px; padding: 0 12px; background: none; border: none; color: var(--lime); font-size: 13px; font-weight: 700; }
+  .fair-line { font-size: 12px; color: var(--muted); margin: 10px 4px 0; overflow-wrap: anywhere; }
+  .hrow { display: flex; align-items: center; gap: 8px; }
+  .list-row.col > .sbtn { align-self: flex-start; margin-top: 8px; }
+  .vbox { border-top: 1px solid var(--line); margin-top: 10px; padding-top: 4px; }
+  .vbox .s { font-size: 13px; color: var(--muted); margin: 0; }
+  .verdict { font-weight: 700; font-size: 13px; margin: 10px 0 0; }
+  .fair-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); margin: 10px 0; }
+  .fair-row b { color: var(--text); }
   .nav-in.four button { flex-direction: column; gap: 2px; font-size: 11px; }
   .nav-in.four .soon-tag { right: auto; left: calc(50% + 12px); top: 2px; font-size: 9px; padding: 0 4px; }
   #sub-overlay { z-index: 15; }
@@ -340,6 +350,7 @@
     </div>
 
     <button class="btn" id="mines-btn">Начать игру</button>
+    <button class="linkbtn" data-go="history">Проверить честность</button>
   </section>
 
   <!-- Апгрейдер -->
@@ -369,6 +380,7 @@
     <p class="note hidden" id="upg-cap" style="text-align:center;margin:-4px 0 6px;"></p>
     <div class="line-row"><span>Выигрыш при успехе</span><span class="v"><svg class="st"><use href="#i-star"/></svg><span id="upg-win">268</span></span></div>
     <button class="btn" id="upg-btn">Улучшить</button>
+    <button class="linkbtn" data-go="history">Проверить честность</button>
   </section>
 
   <!-- Краш -->
@@ -395,6 +407,8 @@
     </div>
     <p class="sub" id="cr-count-players">Игроков 0 · банк 0</p>
     <div id="cr-players"></div>
+    <p class="fair-line" id="cr-fair"></p>
+    <button class="linkbtn" data-go="history">Проверить честность</button>
   </section>
 
   <!-- Арена -->
@@ -423,6 +437,8 @@
       <button class="btn" id="ar-btn" data-mode="bet">Поставить</button>
     </div>
     <div class="info3"><span>Доля <b id="ar-share">0 %</b></span><span>Выигрыш <b id="ar-prize" class="ok">0</b></span><span>Комиссия <b id="ar-fee">5 %</b></span></div>
+    <p class="fair-line" id="ar-fair"></p>
+    <button class="linkbtn" data-go="history">Проверить честность</button>
   </section>
 
   <section id="v-cases" class="view hidden">
@@ -451,6 +467,25 @@
       </div>
       <div id="earn-body"><p class="mu" style="margin:0;">Загрузка…</p></div>
     </div>
+
+    <div class="card" id="fair" style="margin-top:12px;">
+      <p class="who-name">Честная игра</p>
+      <p class="who-tag" style="margin-bottom:12px;">Результат каждой ставки считается из двух сидов. Хэш сервер-сида ты видишь заранее, поэтому подменить исход нельзя. После смены сидов сервер-сид раскрывается, и любую ставку можно проверить.</p>
+      <p class="lbl">Хэш сервер-сида</p>
+      <p class="mono" id="fair-hash">…</p>
+      <label class="lbl" for="fair-client" style="display:block;margin-top:12px;">Клиент-сид (можно поменять на свой)</label>
+      <input class="input" id="fair-client" maxlength="64" autocomplete="off" spellcheck="false">
+      <div class="fair-row"><span>Ставок на этих сидах (nonce)</span><b id="fair-nonce">0</b></div>
+      <div class="row2"><button class="btn btn-ghost" id="fair-rotate">Сменить сиды</button><button class="btn" data-go="history">История ставок</button></div>
+      <div class="list-row hidden" id="fair-prev" style="display:block;"></div>
+    </div>
+  </section>
+
+  <section id="v-history" class="view hidden">
+    <button class="back" data-go="profile"><svg class="ic"><use href="#i-back"/></svg>Профиль</button>
+    <h1>История ставок</h1>
+    <p class="lead">Нажми «Проверить», и телефон сам пересчитает результат по сидам.</p>
+    <div id="hist-list"></div>
   </section>
 
   <section id="v-admin" class="view hidden">
@@ -662,16 +697,17 @@ function setAvatar(el, photo, name) {
   } else el.textContent = letter;
 }
 
-var views = ["games", "mines", "upg", "crash", "arena", "cases", "profile", "admin"], curView = "games";
+var views = ["games", "mines", "upg", "crash", "arena", "cases", "profile", "admin", "history"], curView = "games";
 function go(name) {
   if (curView === "crash") stopCrash();
   if (curView === "arena") stopArena();
   curView = name;
   views.forEach(function (v) { var el = $("v-" + v); if (el) el.classList.toggle("hidden", v !== name); });
-  var tab = (name === "cases" || name === "profile" || name === "admin") ? name : "games";
+  var tab = (name === "cases" || name === "profile" || name === "admin") ? name : name === "history" ? "profile" : "games";
   document.querySelectorAll(".nav button").forEach(function (b) { b.classList.toggle("on", b.dataset.go === tab); });
   window.scrollTo(0, 0);
-  if (name === "profile") refreshMe();
+  if (name === "profile") { refreshMe(); loadFair(); }
+  if (name === "history") loadHistory();
   if (name === "upg") updUpg();
   if (name === "crash") startCrash();
   if (name === "arena") startArena();
@@ -1013,6 +1049,7 @@ async function pollCrash() {
 }
 function renderCrash() {
   var s = cs;
+  if (s.hash) $("cr-fair").textContent = "Раунд #" + s.round_id + " · хэш сида " + shortHash(s.hash) + (s.seed ? " · сид раскрыт: " + shortHash(s.seed) : "");
   $("cr-history").innerHTML = s.history.map(function (h, i) { return '<span class="' + (h >= 2 ? "hi" : "") + '">' + fm(h) + "</span>"; }).join("");
   $("cr-count-players").innerHTML = "Игроков " + s.players.length + " · банк " + fmt(s.pot);
   $("cr-players").innerHTML = s.players.map(function (p) {
@@ -1157,6 +1194,7 @@ function buildArena() {
   $("ar-field").innerHTML = html;
 }
 function renderArenaPanel() {
+  $("ar-fair").textContent = as.hash ? "Раунд #" + as.round_id + " · хэш сида " + shortHash(as.hash) : "Хэш сида появится с первой ставкой раунда";
   var s = as, ph = s.phase, btn = $("ar-btn"), typed = readAmount("ar-amount");
   $("ar-pot").textContent = fmt(s.pot);
   $("ar-status").textContent = ph === "idle" ? "Ждём игроков" : ph === "betting" ? "Приём ставок" : ph === "playing" ? "Шар летит" : "Победил " + (s.last && s.last.winner ? s.last.winner : "");
@@ -1406,6 +1444,143 @@ $("adm-bc-go").addEventListener("click", async function () {
   if (!confirm("Отправить сообщение всем игрокам?")) return;
   var d = await admAction("/api/admin/broadcast", { text: text });
   if (d) $("adm-bc-text").value = "";
+});
+
+/* ---------- Честная игра ---------- */
+var GAME_NAMES = { upgrader: "Апгрейдер", mines: "Мины", crash: "Краш", arena: "Арена" };
+var hist = [];
+var te = new TextEncoder();
+async function sha256hex(text) {
+  var b = new Uint8Array(await crypto.subtle.digest("SHA-256", te.encode(text)));
+  return Array.from(b, function (x) { return x.toString(16).padStart(2, "0"); }).join("");
+}
+async function hmacFloats(key, msg) {
+  var k = await crypto.subtle.importKey("raw", te.encode(key), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  var b = new Uint8Array(await crypto.subtle.sign("HMAC", k, te.encode(msg))), out = [];
+  for (var i = 0; i < 32; i += 4) out.push(b[i] / 256 + b[i + 1] / 65536 + b[i + 2] / 16777216 + b[i + 3] / 4294967296);
+  return out;
+}
+async function fairFloats(ss, cs, nonce, count) {
+  var out = [], cursor = 0;
+  while (out.length < count) { out = out.concat(await hmacFloats(ss, cs + ":" + nonce + ":" + cursor)); cursor++; }
+  return out.slice(0, count);
+}
+function minesFrom(floats, count) {
+  var cells = []; for (var i = 0; i < 25; i++) cells.push(i);
+  var out = [];
+  for (var k = 0; k < count; k++) out.push(cells.splice(Math.floor(floats[k] * (25 - k)), 1)[0]);
+  return out.sort(function (a, b) { return a - b; });
+}
+function crashPointFrom(r, edge) {
+  return Math.max(1, Math.min(1000, Math.floor((1 - edge) / (1 - r) * 100) / 100));
+}
+function cellList(list) { return list.map(function (c) { return c + 1; }).join(", "); }
+
+function shortHash(h) { return h ? h.slice(0, 12) + "…" + h.slice(-6) : ""; }
+function renderSeeds(a) {
+  if (!a) return;
+  $("fair-hash").textContent = a.hash;
+  if (document.activeElement !== $("fair-client")) $("fair-client").value = a.client_seed;
+  $("fair-nonce").textContent = fmt(a.nonce);
+}
+async function loadFair() {
+  var d = await api("/api/fair");
+  if (d.ok) renderSeeds(d.active);
+}
+$("fair-rotate").addEventListener("click", async function () {
+  var d = await api("/api/fair/seed", { client_seed: $("fair-client").value.trim() });
+  if (!d.ok) { toast(d.error || "Ошибка"); return; }
+  renderSeeds(d.active);
+  var p = d.previous;
+  $("fair-prev").classList.remove("hidden");
+  $("fair-prev").innerHTML = '<p class="lbl" style="margin:0 0 6px;">Прошлый сервер-сид раскрыт</p><p class="mono">' + esc(p.server_seed) + '</p>' +
+    '<p class="s" style="margin:6px 0 0;">Ставок на нём: ' + fmt(p.nonce) + '. Теперь их можно проверить в истории.</p>';
+  toast("Сиды сменены");
+});
+
+function betTitle(b) {
+  var f = b.fair || {}, t = GAME_NAMES[b.game] || b.game;
+  if (b.game === "upgrader" && f.chance) t += " · шанс " + f.chance + " %";
+  if (b.game === "mines" && f.mines_count) t += " · мин " + f.mines_count;
+  if (b.game === "crash" && f.cashed) t += " · забрал ×" + String(f.cashed).replace(".", ",");
+  return t;
+}
+async function loadHistory() {
+  $("hist-list").innerHTML = '<p class="note">Загрузка…</p>';
+  var d = await api("/api/history");
+  if (!d.ok) { $("hist-list").innerHTML = '<p class="note">' + esc(d.error || "Ошибка") + "</p>"; return; }
+  hist = d.bets;
+  $("hist-list").innerHTML = hist.map(function (b, i) {
+    var net = b.payout - b.stake;
+    return '<div class="list-row col"><div class="hrow"><span class="grow"><span class="t">' + esc(betTitle(b)) + '</span><span class="s">' + fdate(b.created) + " · ставка " + fmt(b.stake) + '</span></span>' +
+      '<b class="' + (net >= 0 ? "acc" : "bad") + '">' + (net > 0 ? "+" : "") + fmt(net) + "</b></div>" +
+      '<button class="sbtn" data-verify="' + i + '">Проверить</button><div class="vbox hidden" id="vb-' + i + '"></div></div>';
+  }).join("") || '<p class="note">Ставок пока нет</p>';
+}
+function vrow(label, value, mono) { return '<p class="lbl" style="margin:8px 0 2px;">' + label + '</p><p class="' + (mono ? "mono" : "s") + '">' + value + "</p>"; }
+function verdict(ok, text) { return '<p class="verdict ' + (ok ? "acc" : "bad") + '">' + (ok ? "Совпадает: " : "Не совпадает: ") + text + "</p>"; }
+
+async function verifyBet(b) {
+  var f = b.fair;
+  if (!f) return '<p class="s">Ставка сделана до включения проверки честности.</p>';
+  if (!window.crypto || !crypto.subtle) return '<p class="s">Браузер не поддерживает проверку (нет WebCrypto).</p>';
+  var html = "";
+  if (f.seed_id !== undefined) {
+    html += vrow("Хэш сервер-сида (показан до ставки)", esc(f.hash), true) + vrow("Клиент-сид", esc(f.client_seed), true) + vrow("Nonce", f.nonce);
+    if (!f.server_seed) {
+      return html + '<p class="s" style="margin-top:10px;">Сервер-сид ещё секретный: он раскроется, когда сменишь сиды в профиле. После этого проверку можно пройти.</p>';
+    }
+    html += vrow("Сервер-сид", esc(f.server_seed), true);
+    var hashOk = (await sha256hex(f.server_seed)) === f.hash;
+    html += verdict(hashOk, hashOk ? "сервер-сид даёт тот же хэш, сервер его не подменял" : "хэш сервер-сида другой");
+    if (b.game === "upgrader") {
+      var roll = (await fairFloats(f.server_seed, f.client_seed, f.nonce, 1))[0] * 100;
+      var win = roll < f.chance, pay = win ? Math.floor(b.stake * 100 * (1 - f.edge) / f.chance) : 0;
+      html += vrow("Результат", "Выпало " + roll.toFixed(4).replace(".", ",") + " при шансе " + f.chance + " % → " + (win ? "победа, выплата " + fmt(pay) : "проигрыш"));
+      html += verdict(roll === f.roll && pay === b.payout, roll === f.roll && pay === b.payout ? "бросок и выплата те же, что на сервере" : "результат отличается");
+    } else {
+      var mines = minesFrom(await fairFloats(f.server_seed, f.client_seed, f.nonce, f.mines_count), f.mines_count);
+      var same = mines.join(",") === f.mines.slice().sort(function (a, c) { return a - c; }).join(",");
+      var opened = f.opened || [], clean = opened.every(function (c) { return mines.indexOf(c) < 0; });
+      var hitOk = f.hit === undefined || mines.indexOf(f.hit) >= 0;
+      html += vrow("Мины стояли на клетках", cellList(mines));
+      html += vrow("Ты открыл", opened.length ? cellList(opened) : "—") + (f.hit !== undefined ? vrow("Взрыв на клетке", f.hit + 1) : "");
+      html += verdict(same && clean && hitOk, same && clean && hitOk ? "мины расставлены по сидам до начала игры" : "расстановка отличается");
+    }
+    return html;
+  }
+  var r = f.round;
+  if (!r) return '<p class="s">Нет данных о раунде.</p>';
+  html += vrow("Раунд", "#" + f.round_id) + vrow("Хэш сида раунда (показан до ставок)", esc(r.hash), true);
+  if (!r.seed || !r.result) return html + '<p class="s" style="margin-top:10px;">Сид раскроется после окончания раунда.</p>';
+  html += vrow("Сид раунда", esc(r.seed), true);
+  var ok = (await sha256hex(r.seed)) === r.hash;
+  html += verdict(ok, ok ? "сид даёт тот же хэш" : "хэш сида другой");
+  if (b.game === "crash") {
+    var point = crashPointFrom((await hmacFloats(r.seed, "crash"))[0], r.result.edge);
+    html += vrow("Точка взрыва", "×" + String(point).replace(".", ",") + (f.cashed ? " · ты забрал на ×" + String(f.cashed).replace(".", ",") : " · ставка сгорела"));
+    var cOk = point === r.result.point && (!f.cashed || f.cashed <= point);
+    html += verdict(cOk, cOk ? "взрыв определён сидом до начала раунда" : "точка взрыва отличается");
+  } else if (r.result.refunded) {
+    html += '<p class="s" style="margin-top:8px;">Раунд не состоялся, ставки вернулись.</p>';
+  } else {
+    var res = r.result, pot = res.amounts.reduce(function (a, c) { return a + c; }, 0);
+    var pick = (await hmacFloats(r.seed, "arena"))[0] * pot, acc = 0, wi = -1;
+    for (var i = 0; i < res.amounts.length; i++) { acc += res.amounts[i]; wi = i; if (pick < acc) break; }
+    html += vrow("Ставки по убыванию", res.amounts.map(function (a, i) { return fmt(a) + (i === res.my_index ? " (ты)" : ""); }).join(", "));
+    html += vrow("Выпало", fmt(Math.floor(pick)) + " из " + fmt(pot) + " → победила ставка №" + (wi + 1));
+    var aOk = Math.abs(pick - res.pick) < 1e-6 && wi === res.winner_index;
+    html += verdict(aOk, aOk ? "победитель определён сидом" : "победитель отличается");
+  }
+  return html;
+}
+$("hist-list").addEventListener("click", async function (e) {
+  var btn = e.target.closest("[data-verify]");
+  if (!btn) return;
+  var i = +btn.dataset.verify, box = $("vb-" + i);
+  if (!box.classList.contains("hidden")) { box.classList.add("hidden"); return; }
+  box.innerHTML = '<p class="s">Считаю…</p>'; box.classList.remove("hidden");
+  try { box.innerHTML = await verifyBet(hist[i]); } catch (err) { box.innerHTML = '<p class="s">Не удалось проверить: ' + esc(err.message) + "</p>"; }
 });
 
 load();
