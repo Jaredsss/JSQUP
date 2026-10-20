@@ -183,6 +183,32 @@
   .toast.show { display: block; animation: toastIn .25s ease-out; }
   .fail { text-align: center; padding: 28px 12px; }
 
+  /* Админка и подписки */
+  .adm-card { margin-top: 12px; }
+  .adm-card h2 { font-family: var(--display); font-size: 18px; font-weight: 800; margin: 0 0 12px; }
+  .stat .val.sm2 { font-size: 20px; }
+  .input { display: block; width: 100%; background: var(--deep); border: 1.5px solid var(--line2); border-radius: 14px; color: var(--text); font: 600 16px "Inter", sans-serif; padding: 12px 14px; margin-bottom: 10px; }
+  .input:focus { outline: none; border-color: var(--lime); }
+  .input::placeholder { color: var(--faint); }
+  textarea.input { min-height: 110px; resize: vertical; font-weight: 500; line-height: 1.4; }
+  .search { display: flex; gap: 8px; }
+  .search .input { margin-bottom: 0; }
+  .search .sbtn { min-height: 48px; padding: 0 16px; }
+  .list-row { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; background: var(--deep); border: 1px solid var(--line); border-radius: 14px; padding: 10px 12px; margin-top: 8px; font-size: 14px; color: var(--text); }
+  button.list-row:active { border-color: var(--lime); }
+  .list-row.sel { border-color: var(--lime); }
+  .list-row .grow { flex: 1; min-width: 0; }
+  .list-row .t { display: block; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .list-row .s { display: block; font-size: 12px; color: var(--muted); margin-top: 2px; overflow-wrap: anywhere; }
+  .sbtn { flex-shrink: 0; min-height: 40px; border-radius: 12px; border: none; padding: 0 12px; font-weight: 700; font-size: 13px; background: var(--surface2); color: var(--text); display: inline-flex; align-items: center; }
+  .sbtn.lime { background: var(--lime); color: var(--on-accent); }
+  .check { display: flex; align-items: center; gap: 10px; font-size: 14px; color: var(--muted); margin: 2px 0 12px; }
+  .check input { width: 20px; height: 20px; accent-color: var(--lime); }
+  .nav-in.four button { flex-direction: column; gap: 2px; font-size: 11px; }
+  .nav-in.four .soon-tag { right: auto; left: calc(50% + 12px); top: 2px; font-size: 9px; padding: 0 4px; }
+  #sub-overlay { z-index: 15; }
+  #sub-list { margin-bottom: 12px; }
+
   .game-popup {
     position: fixed; top: 38%; left: 50%; transform: translate(-50%, -50%) scale(.6);
     background: var(--bg); border: 2px solid var(--line2); padding: 18px 30px;
@@ -223,6 +249,7 @@
     <symbol id="i-back" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></symbol>
     <symbol id="i-games" viewBox="0 0 24 24"><rect x="3" y="7.5" width="18" height="10" rx="5"/><path d="M8 10.5v4M6 12.5h4"/><circle cx="15.5" cy="11.5" r="1"/><circle cx="18" cy="13.5" r="1"/></symbol>
     <symbol id="i-box" viewBox="0 0 24 24"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5L12 12l8-4.5M12 12v9"/></symbol>
+    <symbol id="i-admin" viewBox="0 0 24 24"><path d="M12 3l7 3v5c0 4.5-3 8.3-7 10-4-1.7-7-5.5-7-10V6z"/><path d="M9 12l2 2 4-4"/></symbol>
     <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 4-6 8-6s8 2 8 6"/></symbol>
     <symbol id="rk" viewBox="0 0 60 60"><path d="M30 4C40 14 42 30 38 44H22C18 30 20 14 30 4Z" fill="#F5F5FA"/><circle cx="30" cy="24" r="5" fill="#0B0B12"/><circle cx="30" cy="24" r="2.4" fill="#C6FF3D"/><polygon points="22,36 12,50 22,46" fill="#FF4FA3"/><polygon points="38,36 48,50 38,46" fill="#FF4FA3"/><path d="M25 46L30 58L35 46Z" fill="#C6FF3D"/></symbol>
   </defs>
@@ -417,6 +444,54 @@
     </div>
   </section>
 
+  <section id="v-admin" class="view hidden">
+    <h1>Админка</h1>
+    <p class="lead" id="adm-lead">Управление ботом</p>
+    <div class="stats" id="adm-stats"></div>
+
+    <div class="card adm-card">
+      <h2>Баланс игрока</h2>
+      <div class="search">
+        <input class="input" id="adm-q" placeholder="ID, @username или имя" aria-label="Поиск игрока">
+        <button class="sbtn lime" id="adm-find">Найти</button>
+      </div>
+      <div id="adm-users"></div>
+      <div id="adm-user" class="hidden">
+        <div class="list-row sel"><span class="grow"><span class="t" id="adm-u-name"></span><span class="s" id="adm-u-meta"></span></span><b class="acc" id="adm-u-bal"></b></div>
+        <input class="input" id="adm-delta" type="number" inputmode="numeric" min="1" placeholder="Сколько звёзд" aria-label="Сколько звёзд" style="margin-top:10px;">
+        <input class="input" id="adm-reason" maxlength="200" placeholder="Комментарий (необязательно)" aria-label="Комментарий">
+        <label class="check"><input type="checkbox" id="adm-notify" checked> Сообщить игроку в боте</label>
+        <div class="row2"><button class="btn" data-act="give">Начислить</button><button class="btn btn-ghost" data-act="take">Списать</button></div>
+      </div>
+    </div>
+
+    <div class="card adm-card">
+      <h2>Заявки на вывод</h2>
+      <div id="adm-wd"></div>
+    </div>
+
+    <div class="card adm-card">
+      <h2>Обязательные подписки</h2>
+      <p class="note">Бот должен быть администратором канала, иначе он не сможет проверить подписку.</p>
+      <div id="adm-ch"></div>
+      <input class="input" id="adm-ch-chat" placeholder="@канал, t.me/канал или -100…" aria-label="Канал" style="margin-top:12px;">
+      <input class="input" id="adm-ch-url" placeholder="Ссылка для кнопки (необязательно)" aria-label="Ссылка для кнопки">
+      <button class="btn" id="adm-ch-add">Добавить канал</button>
+    </div>
+
+    <div class="card adm-card">
+      <h2>Рассылка</h2>
+      <textarea class="input" id="adm-bc-text" maxlength="4000" placeholder="Текст сообщения всем игрокам" aria-label="Текст рассылки"></textarea>
+      <p class="note" id="adm-bc-status"></p>
+      <button class="btn" id="adm-bc-go">Отправить всем</button>
+    </div>
+
+    <div class="card adm-card">
+      <h2>Последние начисления</h2>
+      <div id="adm-log"></div>
+    </div>
+  </section>
+
   <div class="card fail hidden" id="fail"><p class="who-name" style="margin-bottom:8px;">Не удалось войти</p><p class="mu" style="margin:0;">Напиши боту /start и открой игру кнопкой из сообщения бота: так игра узнает, чей это профиль.</p><p class="mu" id="fail-debug" style="margin:14px 0 0;font-size:12px;word-break:break-word;"></p></div>
 </div>
 
@@ -424,6 +499,7 @@
   <button data-go="games" class="on"><svg class="ic"><use href="#i-games"/></svg>Игры</button>
   <button data-go="cases"><span class="soon-tag">скоро</span><svg class="ic"><use href="#i-box"/></svg>Кейсы</button>
   <button data-go="profile"><svg class="ic"><use href="#i-user"/></svg>Профиль</button>
+  <button data-go="admin" id="nav-admin" class="hidden"><svg class="ic"><use href="#i-admin"/></svg>Админ</button>
 </div></nav>
 
 <div class="overlay" id="overlay">
@@ -446,6 +522,15 @@
     <p class="note">Заявку проверяет администратор. Звёзды списываются сразу, а если заявку отклонят, вернутся на баланс.</p>
     <p class="err" id="w-error"></p>
     <button class="btn" id="w-go">Вывести</button>
+  </div>
+</div>
+<div class="overlay" id="sub-overlay">
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="sub-title">
+    <div class="sheet-head"><h2 class="sheet-title" id="sub-title">Подпишись, чтобы играть</h2></div>
+    <p class="note">Чтобы пользоваться ботом, подпишись на каналы ниже и нажми «Проверить».</p>
+    <div id="sub-list"></div>
+    <p class="err" id="sub-error"></p>
+    <button class="btn" id="sub-check">Проверить</button>
   </div>
 </div>
 <div class="toast" id="toast"></div>
@@ -497,7 +582,9 @@ function showGamePopup(text, isWin) {
 async function api(path, body) {
   try {
     var res = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json", "X-Init-Data": initData, "X-Session": sessionToken }, body: JSON.stringify(body || {}) });
-    return await res.json();
+    var j = await res.json();
+    if (j && j.code === "subscribe") showSubs(j.subs);
+    return j;
   } catch (e) { return { ok: false, error: "Нет связи с сервером" }; }
 }
 var shownBal = null, balAnim = 0;
@@ -559,13 +646,13 @@ function setAvatar(el, photo, name) {
   } else el.textContent = letter;
 }
 
-var views = ["games", "mines", "upg", "crash", "arena", "cases", "profile"], curView = "games";
+var views = ["games", "mines", "upg", "crash", "arena", "cases", "profile", "admin"], curView = "games";
 function go(name) {
   if (curView === "crash") stopCrash();
   if (curView === "arena") stopArena();
   curView = name;
   views.forEach(function (v) { var el = $("v-" + v); if (el) el.classList.toggle("hidden", v !== name); });
-  var tab = (name === "cases" || name === "profile") ? name : "games";
+  var tab = (name === "cases" || name === "profile" || name === "admin") ? name : "games";
   document.querySelectorAll(".nav button").forEach(function (b) { b.classList.toggle("on", b.dataset.go === tab); });
   window.scrollTo(0, 0);
   if (name === "profile") refreshMe();
@@ -573,6 +660,7 @@ function go(name) {
   if (name === "crash") startCrash();
   if (name === "arena") startArena();
   if (name === "mines") initMinesView();
+  if (name === "admin") loadAdmin();
 }
 
 document.addEventListener("click", function (e) {
@@ -642,6 +730,12 @@ async function load() {
   setAvatar($("avatar-sm"), d.photo, d.name);
   setAvatar($("avatar-lg"), d.photo, d.name);
   loadTask();
+  showSubs(d.subs);
+  if (d.is_admin) {
+    $("nav-admin").classList.remove("hidden");
+    document.querySelector(".nav-in").classList.add("four");
+    if (new URLSearchParams(location.search).get("admin") === "1") go("admin");
+  }
 }
 
 async function refreshMe() {
@@ -1108,6 +1202,147 @@ function frameArena() {
   }
   arenaRaf = requestAnimationFrame(frameArena);
 }
+
+/* ---------- Обязательная подписка ---------- */
+function openLink(url) {
+  if (tg && /^https:\/\/t\.me\//.test(url) && tg.openTelegramLink) tg.openTelegramLink(url);
+  else if (tg && tg.openLink) tg.openLink(url);
+  else window.open(url, "_blank", "noopener");
+}
+function showSubs(list) {
+  if (!list || !list.length) { $("sub-overlay").classList.remove("open"); return; }
+  $("sub-list").innerHTML = list.map(function (c) {
+    return '<button class="list-row sub-link" data-url="' + esc(c.url) + '"><span class="grow"><span class="t">' + esc(c.title) + '</span></span><span class="sbtn lime">Подписаться</span></button>';
+  }).join("");
+  $("sub-overlay").classList.add("open");
+}
+$("sub-list").addEventListener("click", function (e) {
+  var b = e.target.closest(".sub-link");
+  if (b) openLink(b.dataset.url);
+});
+$("sub-check").addEventListener("click", async function () {
+  var btn = this;
+  btn.disabled = true;
+  var d = await api("/api/subs/check");
+  btn.disabled = false;
+  if (!d.ok) { $("sub-error").textContent = d.error || "Ошибка"; return; }
+  if (d.subs.length) { $("sub-error").textContent = "Подписка не найдена. Подпишись и попробуй ещё раз"; showSubs(d.subs); return; }
+  $("sub-error").textContent = "";
+  showSubs([]);
+  toast("Спасибо! Приятной игры");
+});
+
+/* ---------- Админка ---------- */
+var adm = { sel: null, busy: false };
+function fdate(ts) { var d = new Date(ts * 1000); return d.toLocaleDateString("ru-RU") + " " + d.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }); }
+function userLine(name, username, id) { return esc(name || "Без имени") + (username ? " · @" + esc(username) : "") + " · " + id; }
+
+function renderAdmin(d) {
+  var s = d.stats;
+  var tiles = [
+    ["Игроков", s.users, ""], ["На балансах", s.balances, ""],
+    ["Пополнено", s.topups, ""], ["Выплачено", s.paid, ""],
+    ["Ждут вывода", s.pending, "pink"], ["Выдано админом", s.granted, ""]
+  ];
+  $("adm-stats").innerHTML = tiles.map(function (t) {
+    return '<div class="stat"><p class="lbl">' + t[0] + '</p><div class="val sm2 ' + t[2] + '">' + fmt(t[1]) + "</div></div>";
+  }).join("");
+
+  $("adm-wd").innerHTML = d.withdrawals.map(function (w) {
+    return '<div class="list-row"><span class="grow"><span class="t">' + fmt(w.amount) + ' ★</span><span class="s">' + userLine(w.name, w.username, w.user_id) + " · " + fdate(w.created) + '</span></span>' +
+      '<button class="sbtn lime" data-wd="' + w.id + '" data-ok="1">Выдал</button><button class="sbtn" data-wd="' + w.id + '" data-ok="0">Отклонить</button></div>';
+  }).join("") || '<p class="note" style="margin:0;">Заявок нет</p>';
+
+  $("adm-ch").innerHTML = d.channels.map(function (c) {
+    return '<div class="list-row"><span class="grow"><span class="t">' + esc(c.title) + '</span><span class="s">' + esc(c.url) + '</span></span><button class="sbtn" data-ch-del="' + c.id + '" aria-label="Удалить канал">Удалить</button></div>';
+  }).join("") || '<p class="note" style="margin:0;">Подписки не требуются</p>';
+
+  $("adm-log").innerHTML = d.log.map(function (l) {
+    return '<div class="list-row"><span class="grow"><span class="t">' + esc(l.name || "Игрок") + " · " + l.user_id + '</span><span class="s">' + fdate(l.created) + (l.reason ? " · " + esc(l.reason) : "") + '</span></span><b class="' + (l.delta > 0 ? "acc" : "bad") + '">' + (l.delta > 0 ? "+" : "") + fmt(l.delta) + "</b></div>";
+  }).join("") || '<p class="note" style="margin:0;">Пока пусто</p>';
+
+  var b = d.broadcast;
+  $("adm-bc-status").textContent = b.total ? (b.running ? "Идёт рассылка: " : "Последняя рассылка: ") + fmt(b.sent) + " из " + fmt(b.total) + " доставлено" + (b.failed ? ", ошибок " + fmt(b.failed) : "") : "";
+  clearTimeout(adm.t);
+  if (b.running && curView === "admin") adm.t = setTimeout(loadAdmin, 3000);
+  if (d.message) toast(d.message);
+}
+async function loadAdmin() {
+  var d = await api("/api/admin/state");
+  if (!d.ok) { toast(d.error || "Нет доступа"); return; }
+  renderAdmin(d);
+}
+async function admAction(path, body) {
+  if (adm.busy) return null;
+  adm.busy = true;
+  var d = await api(path, body);
+  adm.busy = false;
+  if (!d.ok) { toast(d.error || "Ошибка"); return null; }
+  if (d.stats) renderAdmin(d);
+  return d;
+}
+function selectUser(u) {
+  adm.sel = u;
+  $("adm-u-name").textContent = u.name || "Без имени";
+  $("adm-u-meta").textContent = (u.username ? "@" + u.username + " · " : "") + "ID " + u.id;
+  $("adm-u-bal").textContent = fmt(u.balance) + " ★";
+  $("adm-user").classList.remove("hidden");
+}
+async function findUsers() {
+  var q = $("adm-q").value.trim();
+  if (!q) { toast("Введи ID, @username или имя"); return; }
+  var d = await admAction("/api/admin/users", { query: q });
+  if (!d) return;
+  adm.found = d.users;
+  $("adm-user").classList.add("hidden");
+  $("adm-users").innerHTML = d.users.map(function (u, i) {
+    return '<button class="list-row" data-u="' + i + '"><span class="grow"><span class="t">' + esc(u.name || "Без имени") + '</span><span class="s">' + (u.username ? "@" + esc(u.username) + " · " : "") + "ID " + u.id + '</span></span><b>' + fmt(u.balance) + " ★</b></button>";
+  }).join("") || '<p class="note" style="margin:0;">Никого не нашли. Игрок должен хотя бы раз запустить бота</p>';
+  if (d.users.length === 1) { $("adm-users").innerHTML = ""; selectUser(d.users[0]); }
+}
+$("adm-find").addEventListener("click", findUsers);
+$("adm-q").addEventListener("keydown", function (e) { if (e.key === "Enter") findUsers(); });
+$("v-admin").addEventListener("click", async function (e) {
+  var t = e.target.closest("[data-u],[data-act],[data-wd],[data-ch-del]");
+  if (!t) return;
+  if (t.dataset.u !== undefined) { selectUser(adm.found[+t.dataset.u]); return; }
+  if (t.dataset.act) {
+    var n = readAmount("adm-delta");
+    if (!adm.sel || !n) { toast("Введи количество звёзд"); return; }
+    var delta = t.dataset.act === "give" ? n : -n;
+    var d = await admAction("/api/admin/balance", { user_id: adm.sel.id, delta: delta, reason: $("adm-reason").value, notify: $("adm-notify").checked });
+    if (!d) return;
+    adm.sel.balance = d.balance; selectUser(adm.sel);
+    $("adm-delta").value = ""; $("adm-reason").value = "";
+    toast((delta > 0 ? "Начислено " : "Списано ") + fmt(n) + " ★");
+    if (adm.sel.id === me.id) setBalance(d.balance);
+    loadAdmin();
+    return;
+  }
+  if (t.dataset.wd) {
+    var ok = t.dataset.ok === "1";
+    if (!confirm(ok ? "Отметить заявку как выплаченную?" : "Отклонить заявку и вернуть звёзды игроку?")) return;
+    await admAction("/api/admin/withdraw", { id: +t.dataset.wd, approve: ok });
+    return;
+  }
+  if (t.dataset.chDel) {
+    if (!confirm("Убрать канал из обязательных подписок?")) return;
+    await admAction("/api/admin/channels/remove", { id: +t.dataset.chDel });
+  }
+});
+$("adm-ch-add").addEventListener("click", async function () {
+  var chat = $("adm-ch-chat").value.trim();
+  if (!chat) { toast("Укажи канал"); return; }
+  var d = await admAction("/api/admin/channels/add", { chat: chat, url: $("adm-ch-url").value.trim() });
+  if (d) { $("adm-ch-chat").value = ""; $("adm-ch-url").value = ""; }
+});
+$("adm-bc-go").addEventListener("click", async function () {
+  var text = $("adm-bc-text").value.trim();
+  if (!text) { toast("Напиши текст"); return; }
+  if (!confirm("Отправить сообщение всем игрокам?")) return;
+  var d = await admAction("/api/admin/broadcast", { text: text });
+  if (d) $("adm-bc-text").value = "";
+});
 
 load();
 </script>

@@ -7,6 +7,7 @@ import json
 import math
 import os
 import random
+import re
 import sqlite3
 import time
 import unicodedata
@@ -32,6 +33,9 @@ MAX_BET = 1000000
 MINES_MAX_BET = 5000
 MIN_WITHDRAW = 1000
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "1780244880"))
+# Дополнительные админы через запятую
+ADMIN_IDS = {ADMIN_ID} | {int(x) for x in os.environ.get("ADMIN_IDS", "").replace(" ", "").split(",") if x}
+BOT_ID = int(TOKEN.split(":")[0]) if TOKEN.split(":")[0].isdigit() else 0
 
 CRASH_WAIT = 15
 CRASH_SHOW = 4
@@ -84,6 +88,14 @@ db.execute(
 )
 db.execute("create table if not exists house(id integer primary key, balance integer not null default 0)")
 db.execute("insert or ignore into house(id, balance) values(1, 0)")
+db.execute(
+    "create table if not exists channels("
+    "id integer primary key autoincrement, chat text unique, title text, url text, created integer)"
+)
+db.execute(
+    "create table if not exists admin_log("
+    "id integer primary key autoincrement, admin_id integer, user_id integer, delta integer, reason text, created integer)"
+)
 db.commit()
 
 
@@ -223,6 +235,10 @@ def require(request):
     return user
 
 
+def is_admin(uid):
+    return uid in ADMIN_IDS
+
+
 def jerr(message, status=400):
     return web.json_response({"ok": False, "error": message}, status=status)
 
@@ -340,6 +356,8 @@ async def handle_me(request):
             "min_withdraw": MIN_WITHDRAW,
             "pending_withdraw": pending_withdraw(uid),
             "upg_edge": UPG_EDGE,
+            "is_admin": is_admin(uid),
+            "subs": await missing_subs(request.app["session"], uid),
         }
     )
 
@@ -382,6 +400,9 @@ async def handle_withdraw(request):
     user = require(request)
     if not user:
         return jerr("auth", 401)
+    blocked = await require_subscribed(request, user)
+    if blocked:
+        return blocked
     d = await read_json(request)
     try:
         amount = int(d.get("amount"))
@@ -459,6 +480,9 @@ async def handle_upgrader(request):
     user = require(request)
     if not user:
         return jerr("auth", 401)
+    blocked = await require_subscribed(request, user)
+    if blocked:
+        return blocked
     d = await read_json(request)
     amount = parse_amount(d.get("amount"))
     try:
@@ -508,6 +532,9 @@ async def handle_mines_start(request):
     user = require(request)
     if not user:
         return jerr("auth", 401)
+    blocked = await require_subscribed(request, user)
+    if blocked:
+        return blocked
     d = await read_json(request)
     amount = parse_amount(d.get("amount"))
     try:
@@ -680,6 +707,9 @@ async def handle_crash_bet(request):
     user = require(request)
     if not user:
         return jerr("auth", 401)
+    blocked = await require_subscribed(request, user)
+    if blocked:
+        return blocked
     d = await read_json(request)
     c = crash
     if c["phase"] != "waiting" or time.time() >= c["wait_until"]:
@@ -792,6 +822,9 @@ async def handle_arena_bet(request):
     user = require(request)
     if not user:
         return jerr("auth", 401)
+    blocked = await require_subscribed(request, user)
+    if blocked:
+        return blocked
     d = await read_json(request)
     a = arena
     now = time.time()
@@ -960,6 +993,294 @@ async def task_loop(app):
         except Exception:
             pass
 
+# ---------- Обязательные подписки ----------
+
+SUB_CACHE_TTL = 300
+sub_cache = {}
+
+
+def list_channels():
+    rows = db.execute("select id, chat, title, url from channels order by id").fetchall()
+    return [{"id": r[0], "chat": r[1], "title": r[2], "url": r[3]} for r in rows]
+
+
+async def missing_subs(session, uid, fresh=False):
+    if is_admin(uid):
+        return []
+    channels = list_channels()
+    if not channels:
+        return []
+    if not fresh and sub_cache.get(uid, 0) > time.time():
+        return []
+    missing = []
+    for ch in channels:
+        try:
+            r = await tg(session, "getChatMember", chat_id=ch["chat"], user_id=uid)
+        except Exception as e:
+            print("missing_subs error:", e)
+            continue
+        if not r.get("ok"):
+            # Бот не может проверить канал (не админ в нём) — игрока из-за этого не блокируем
+            print("getChatMember failed for", ch["chat"], r.get("description"))
+            continue
+        member = r.get("result") or {}
+        status = member.get("status")
+        if status in ("creator", "administrator", "member"):
+            continue
+        if status == "restricted" and member.get("is_member"):
+            continue
+        missing.append({"title": ch["title"], "url": ch["url"]})
+    if missing:
+        sub_cache.pop(uid, None)
+    else:
+        sub_cache[uid] = time.time() + SUB_CACHE_TTL
+    return missing
+
+
+async def require_subscribed(request, user):
+    missing = await missing_subs(request.app["session"], user["id"])
+    if missing:
+        return web.json_response(
+            {"ok": False, "error": "Подпишись на каналы, чтобы играть", "code": "subscribe", "subs": missing},
+            status=403,
+        )
+    return None
+
+
+async def handle_subs_check(request):
+    user = require(request)
+    if not user:
+        return jerr("auth", 401)
+    missing = await missing_subs(request.app["session"], user["id"], fresh=True)
+    return web.json_response({"ok": True, "subs": missing})
+
+
+# ---------- Админ-панель ----------
+
+broadcast = {"running": False, "sent": 0, "failed": 0, "total": 0}
+
+
+def require_admin(request):
+    user = require(request)
+    if user and is_admin(user["id"]):
+        return user
+    return None
+
+
+def admin_state():
+    def one(sql, *args):
+        return db.execute(sql, args).fetchone()[0]
+
+    stats = {
+        "users": one("select count(*) from users"),
+        "balances": one("select coalesce(sum(balance), 0) from users")
+        + one("select coalesce(sum(amount), 0) from holds where game != 'withdraw'"),
+        "topups": one("select coalesce(sum(amount), 0) from charges"),
+        "paid": one("select coalesce(sum(amount), 0) from withdraw_requests where status = 'paid'"),
+        "pending": one("select coalesce(sum(amount), 0) from withdraw_requests where status = 'pending'"),
+        "granted": one("select coalesce(sum(delta), 0) from admin_log"),
+    }
+    withdrawals = [
+        {"id": r[0], "user_id": r[1], "name": r[2], "username": r[3], "amount": r[4], "created": r[5]}
+        for r in db.execute(
+            "select id, user_id, name, username, amount, created from withdraw_requests "
+            "where status = 'pending' order by id"
+        ).fetchall()
+    ]
+    log = [
+        {"user_id": r[0], "name": r[1] or "", "delta": r[2], "reason": r[3], "created": r[4]}
+        for r in db.execute(
+            "select l.user_id, u.name, l.delta, l.reason, l.created from admin_log l "
+            "left join users u on u.id = l.user_id order by l.id desc limit 15"
+        ).fetchall()
+    ]
+    return {"ok": True, "stats": stats, "withdrawals": withdrawals, "channels": list_channels(), "log": log, "broadcast": broadcast}
+
+
+async def handle_admin_state(request):
+    if not require_admin(request):
+        return jerr("Нет доступа", 403)
+    return web.json_response(admin_state())
+
+
+async def handle_admin_users(request):
+    if not require_admin(request):
+        return jerr("Нет доступа", 403)
+    d = await read_json(request)
+    q = str(d.get("query", "")).strip().lstrip("@")
+    if not q:
+        return jerr("Введи ID, @username или имя")
+    if q.lstrip("-").isdigit():
+        rows = db.execute("select id, name, username, balance from users where id = ?", (int(q),)).fetchall()
+    else:
+        like = f"%{q}%"
+        rows = db.execute(
+            "select id, name, username, balance from users where username like ? or name like ? order by balance desc limit 20",
+            (like, like),
+        ).fetchall()
+    users = [{"id": r[0], "name": r[1] or "", "username": r[2] or "", "balance": r[3]} for r in rows]
+    return web.json_response({"ok": True, "users": users})
+
+
+async def handle_admin_balance(request):
+    admin = require_admin(request)
+    if not admin:
+        return jerr("Нет доступа", 403)
+    d = await read_json(request)
+    try:
+        uid = int(d.get("user_id"))
+        delta = int(d.get("delta"))
+    except (TypeError, ValueError):
+        return jerr("Неверные данные")
+    if delta == 0 or abs(delta) > 10_000_000:
+        return jerr("Сумма от 1 до 10 000 000")
+    reason = str(d.get("reason", "")).strip()[:200]
+    if not db.execute("select 1 from users where id = ?", (uid,)).fetchone():
+        return jerr("Игрок не найден. Он должен хотя бы раз запустить бота")
+    cur = db.execute(
+        "update users set balance = balance + ? where id = ? and balance + ? >= 0", (delta, uid, delta)
+    )
+    if cur.rowcount != 1:
+        db.rollback()
+        return jerr("У игрока меньше звёзд, чем ты хочешь списать")
+    db.execute(
+        "insert into admin_log(admin_id, user_id, delta, reason, created) values(?, ?, ?, ?, ?)",
+        (admin["id"], uid, delta, reason, int(time.time())),
+    )
+    db.commit()
+    if d.get("notify"):
+        text = f"Вам начислено {delta} звёзд" if delta > 0 else f"С вашего баланса списано {-delta} звёзд"
+        if reason:
+            text += f"\nКомментарий: {reason}"
+        try:
+            await tg(request.app["session"], "sendMessage", chat_id=uid, text=text)
+        except Exception as e:
+            print("admin notify error:", e)
+    return web.json_response({"ok": True, "balance": get_balance(uid)})
+
+
+async def handle_admin_withdraw(request):
+    if not require_admin(request):
+        return jerr("Нет доступа", 403)
+    d = await read_json(request)
+    try:
+        rid = int(d.get("id"))
+    except (TypeError, ValueError):
+        return jerr("Неверная заявка")
+    note = await resolve_withdraw(request.app["session"], rid, bool(d.get("approve")))
+    data = admin_state()
+    data["message"] = note
+    return web.json_response(data)
+
+
+def parse_channel(text):
+    text = text.strip()
+    m = re.fullmatch(r"(?:https?://)?(?:t\.me|telegram\.me)/([A-Za-z0-9_]{4,})/?", text)
+    if m:
+        return "@" + m.group(1)
+    if re.fullmatch(r"@[A-Za-z0-9_]{4,}", text) or re.fullmatch(r"-100\d{5,}", text):
+        return text
+    return None
+
+
+async def handle_admin_channel_add(request):
+    if not require_admin(request):
+        return jerr("Нет доступа", 403)
+    d = await read_json(request)
+    chat = parse_channel(str(d.get("chat", "")))
+    if not chat:
+        return jerr("Укажи @username канала, ссылку t.me/... или ID вида -100…")
+    url = str(d.get("url", "")).strip()
+    if url and not url.startswith("https://"):
+        return jerr("Ссылка должна начинаться с https://")
+    session = request.app["session"]
+    r = await tg(session, "getChat", chat_id=chat)
+    if not r.get("ok"):
+        return jerr("Бот не видит канал. Добавь бота в канал администратором и попробуй снова")
+    info = r.get("result") or {}
+    if not url:
+        url = f"https://t.me/{info['username']}" if info.get("username") else info.get("invite_link", "")
+    if not url:
+        return jerr("У канала нет публичной ссылки: укажи ссылку-приглашение")
+    warning = ""
+    mr = await tg(session, "getChatMember", chat_id=info["id"], user_id=BOT_ID)
+    if not mr.get("ok") or (mr.get("result") or {}).get("status") not in ("administrator", "creator"):
+        warning = "Бот не администратор канала: проверка подписки работать не будет"
+    try:
+        db.execute(
+            "insert into channels(chat, title, url, created) values(?, ?, ?, ?)",
+            (str(info["id"]), info.get("title") or chat, url, int(time.time())),
+        )
+        db.commit()
+    except sqlite3.IntegrityError:
+        return jerr("Этот канал уже в списке")
+    sub_cache.clear()
+    data = admin_state()
+    data["message"] = warning or "Канал добавлен"
+    return web.json_response(data)
+
+
+async def handle_admin_channel_remove(request):
+    if not require_admin(request):
+        return jerr("Нет доступа", 403)
+    d = await read_json(request)
+    try:
+        cid = int(d.get("id"))
+    except (TypeError, ValueError):
+        return jerr("Неверный канал")
+    db.execute("delete from channels where id = ?", (cid,))
+    db.commit()
+    sub_cache.clear()
+    data = admin_state()
+    data["message"] = "Канал удалён"
+    return web.json_response(data)
+
+
+async def run_broadcast(session, text):
+    ids = [r[0] for r in db.execute("select id from users").fetchall()]
+    broadcast.update(running=True, sent=0, failed=0, total=len(ids))
+    params = {"text": text}
+    if WEBAPP_URL:
+        params["reply_markup"] = {"inline_keyboard": [[{"text": "Открыть JSQUP", "web_app": {"url": WEBAPP_URL}}]]}
+    try:
+        for uid in ids:
+            ok = False
+            for _ in range(2):
+                try:
+                    r = await tg(session, "sendMessage", chat_id=uid, **params)
+                except Exception:
+                    break
+                if r.get("ok"):
+                    ok = True
+                    break
+                retry = (r.get("parameters") or {}).get("retry_after")
+                if not retry:
+                    break
+                await asyncio.sleep(retry + 1)
+            broadcast["sent" if ok else "failed"] += 1
+            await asyncio.sleep(0.05)
+    finally:
+        broadcast["running"] = False
+
+
+async def handle_admin_broadcast(request):
+    if not require_admin(request):
+        return jerr("Нет доступа", 403)
+    d = await read_json(request)
+    text = str(d.get("text", "")).strip()
+    if not text or len(text) > 4000:
+        return jerr("Текст от 1 до 4000 символов")
+    if broadcast["running"]:
+        return jerr("Рассылка уже идёт")
+    broadcast["running"] = True
+    task = asyncio.create_task(run_broadcast(request.app["session"], text))
+    request.app["bg"].add(task)
+    task.add_done_callback(request.app["bg"].discard)
+    data = admin_state()
+    data["message"] = "Рассылка запущена"
+    return web.json_response(data)
+
+
 async def handle_index(request):
     return web.FileResponse(BASE_DIR / "index.html")
 
@@ -973,7 +1294,7 @@ async def process_update(session, u):
         remember_name(cb.get("from"))
         data = cb.get("data", "")
         parts = data.split(":")
-        if cb["from"]["id"] == ADMIN_ID and len(parts) == 3 and parts[0] == "wd" and parts[2].isdigit():
+        if is_admin(cb["from"]["id"]) and len(parts) == 3 and parts[0] == "wd" and parts[2].isdigit():
             note = await resolve_withdraw(session, int(parts[2]), parts[1] == "ok")
             message = cb.get("message") or {}
             if message.get("message_id"):
@@ -1004,6 +1325,13 @@ async def process_update(session, u):
         if new_balance is not None:
             await tg(session, "sendMessage", chat_id=chat_id, text=f"Баланс пополнен: +{amount} звёзд\nНовый баланс: {new_balance}")
         return
+    if msg.get("text", "").split("@")[0].strip().lower() == "/admin":
+        sender = msg.get("from") or {}
+        if is_admin(sender.get("id")) and WEBAPP_URL:
+            url = f"{WEBAPP_URL}?s={make_session(sender['id'])}&admin=1"
+            await tg(session, "sendMessage", chat_id=chat_id, text="Админ-панель JSQUP",
+                     reply_markup={"inline_keyboard": [[{"text": "Открыть админку", "web_app": {"url": url}}]]})
+        return
     if msg.get("text", "").startswith("/start"):
         sender = msg.get("from") or {}
         params = {"chat_id": chat_id, "text": "JSQUP\nНажми кнопку, чтобы открыть игры."}
@@ -1029,6 +1357,7 @@ async def poll(app):
 
 async def on_startup(app):
     refund_holds()
+    app["bg"] = set()
     app["session"] = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=40))
     app["tasks"] = [
         asyncio.create_task(poll(app)),
@@ -1062,6 +1391,14 @@ app.router.add_post("/api/arena/bet", handle_arena_bet)
 app.router.add_post("/api/mines/start", handle_mines_start)
 app.router.add_post("/api/mines/step", handle_mines_step)
 app.router.add_post("/api/mines/cashout", handle_mines_cashout)
+app.router.add_post("/api/subs/check", handle_subs_check)
+app.router.add_post("/api/admin/state", handle_admin_state)
+app.router.add_post("/api/admin/users", handle_admin_users)
+app.router.add_post("/api/admin/balance", handle_admin_balance)
+app.router.add_post("/api/admin/withdraw", handle_admin_withdraw)
+app.router.add_post("/api/admin/channels/add", handle_admin_channel_add)
+app.router.add_post("/api/admin/channels/remove", handle_admin_channel_remove)
+app.router.add_post("/api/admin/broadcast", handle_admin_broadcast)
 
 app.on_startup.append(on_startup)
 app.on_cleanup.append(on_cleanup)
