@@ -306,7 +306,7 @@
     <div style="display:flex;align-items:baseline;justify-content:center;gap:10px;margin:2px 0 8px;">
       <span class="mu" style="font-size:14px;">Шанс</span>
       <span id="upg-ch-txt" class="gtxt" style="font-size:28px;font-weight:600;">35 %</span>
-      <span class="mu" style="font-size:14px;" id="upg-mult">награда x2,86</span>
+      <span class="mu" style="font-size:14px;" id="upg-mult">награда x2,69</span>
     </div>
     <div class="res" id="upg-result"></div>
     <div class="card">
@@ -317,7 +317,7 @@
       <input id="upg-chance" type="range" min="1" max="80" step="1" value="35" aria-label="Шанс выигрыша">
       <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--faint);"><span>1 %</span><span>80 %</span></div>
     </div>
-    <div style="display:flex;justify-content:space-between;align-items:center;font-size:14px;color:var(--muted);padding:12px 4px 10px;"><span>Выигрыш при успехе</span><span style="display:flex;align-items:center;gap:5px;color:var(--text);font-size:18px;font-weight:600;"><svg class="st"><use href="#i-star"/></svg><span id="upg-win">286</span></span></div>
+    <div style="display:flex;justify-content:space-between;align-items:center;font-size:14px;color:var(--muted);padding:12px 4px 10px;"><span>Выигрыш при успехе</span><span style="display:flex;align-items:center;gap:5px;color:var(--text);font-size:18px;font-weight:600;"><svg class="st"><use href="#i-star"/></svg><span id="upg-win">268</span></span></div>
     <button class="btn" id="upg-btn">Улучшить</button>
   </section>
 
@@ -448,6 +448,7 @@ var STAR = '<svg class="st"><use href="#i-star"/></svg>';
 var limits = { min: 1, max: 100000 };
 var minWithdraw = 1000;
 var me = { id: 0, balance: 0 };
+var upgEdge = 0;
 
 function fmt(n) { return Number(n).toLocaleString("ru-RU"); }
 function fm(x) { return Number(x).toFixed(2).replace(".", ",") + "x"; }
@@ -466,7 +467,7 @@ function showGamePopup(text, isWin) {
   var b = document.createElement("div");
   b.id = "game-popup-banner";
   b.className = "game-popup " + (isWin ? "win" : "lose");
-  b.innerHTML = text;
+  b.textContent = text;
   document.body.appendChild(b);
   setTimeout(function() { b.classList.add("show"); }, 20);
   setTimeout(function() {
@@ -579,18 +580,35 @@ function showFailDebug(d) {
     "; ответ сервера: " + (d && d.error ? d.error : "—");
 }
 
+function fmtLeft(sec) {
+  var h = Math.floor(sec / 3600), m = Math.ceil((sec % 3600) / 60);
+  if (m === 60) { h++; m = 0; }
+  return (h ? h + " ч " : "") + m + " мин";
+}
+function renderTask(st) {
+  if ($("earn-reward")) $("earn-reward").textContent = st.reward;
+  var body = $("earn-body");
+  if (!body) return;
+  var btn = function (id, text) { return '<button class="btn" id="' + id + '" style="padding:10px 0;font-size:14px;">' + text + '</button>'; };
+  var txt = function (t) { return '<p class="mu" style="margin:0 0 10px;">' + t + '</p>'; };
+  if (st.stage === 0) {
+    body.innerHTML = txt("Подпишись на канал " + esc(st.channel) + ", добавь " + esc(st.tag) + " в имя профиля и через " + esc(st.wait_hours) + " ч забери награду.") + btn("task-start", "Заработать");
+  } else if (st.stage === 1) {
+    body.innerHTML = txt("Шаг 1 из 3: подпишись на канал " + esc(st.channel) + ".") +
+      '<div class="row2"><a class="btn btn-ghost" style="padding:10px 0;font-size:14px;" href="' + esc(st.channel_url) + '" target="_blank" rel="noopener">Открыть канал</a>' + btn("task-check", "Проверить") + '</div>';
+  } else if (st.stage === 2) {
+    body.innerHTML = txt("Шаг 2 из 3: добавь " + esc(st.tag) + " в имя профиля Telegram. Если проверка не проходит, отправь боту /check.") + btn("task-check", "Проверить");
+  } else if (st.stage === 3) {
+    body.innerHTML = txt("Шаг 3 из 3: не убирай " + esc(st.tag) + " из имени и не отписывайся. Награду можно забрать через " + fmtLeft(st.left_s || 0) + ".");
+  } else if (st.stage === 4) {
+    body.innerHTML = txt("Время прошло, награда ждёт!") + btn("task-claim", "Забрать награду");
+  } else {
+    body.innerHTML = '<p class="ok" style="margin:0;font-weight:600;">Награда получена!</p>';
+  }
+}
 async function loadTask() {
   var d = await api("/api/task/state");
-  if (!d.ok) return;
-  var st = d.state;
-  if ($("earn-reward")) $("earn-reward").textContent = st.reward;
-  if ($("earn-body")) {
-    if (st.stage === 5) {
-      $("earn-body").innerHTML = '<p class="ok" style="margin:0;font-weight:600;">Награда получена!</p>';
-    } else {
-      $("earn-body").innerHTML = '<p class="mu" style="margin:0 0 10px;">Подпишись на канал ' + st.channel + ' и добавь ' + st.tag + ' в ник.</p><button class="btn" id="task-btn" style="padding:10px 0;font-size:14px;">Проверить задание</button>';
-    }
-  }
+  if (d.ok) renderTask(d.state);
 }
 
 async function load() {
@@ -598,6 +616,7 @@ async function load() {
   if (!d.ok) { showFailDebug(d); $("fail").classList.remove("hidden"); document.querySelectorAll(".view,.nav").forEach(function (x) { x.classList.add("hidden"); }); return; }
   me.id = d.id; limits = { min: d.min, max: d.max };
   if (d.min_withdraw) minWithdraw = d.min_withdraw;
+  if (typeof d.upg_edge === "number") { upgEdge = d.upg_edge; updUpg(); }
   setPending(d.pending_withdraw || 0);
   $("name").textContent = d.name;
   $("username").textContent = d.username ? "@" + d.username : "";
@@ -648,15 +667,20 @@ $("w-go").addEventListener("click", async function () {
   toast("Заявка на вывод создана!");
 });
 
+var taskBusy = false;
 document.addEventListener("click", function (e) {
-  if (e.target && e.target.id === "task-btn") {
-    (async function() {
-      var d = await api("/api/task/check");
-      if (!d.ok) { toast(d.error || "Ошибка"); return; }
-      toast(d.message || "Готово");
-      loadTask();
-    })();
-  }
+  var el = e.target && e.target.closest("#task-start, #task-check, #task-claim");
+  if (!el || taskBusy) return;
+  var path = { "task-start": "/api/task/start", "task-check": "/api/task/check", "task-claim": "/api/task/claim" }[el.id];
+  taskBusy = true;
+  (async function () {
+    var d = await api(path);
+    taskBusy = false;
+    if (!d.ok) { toast(d.error || "Ошибка"); return; }
+    if (d.message) toast(d.message);
+    if (typeof d.balance === "number") setBalance(d.balance);
+    renderTask(d.state);
+  })();
 });
 
 /* ---------- Игра «Мины» ---------- */
@@ -799,8 +823,9 @@ function updUpg() {
   $("upg-arc").setAttribute("stroke-dasharray", (RING * ch / 100) + " " + RING);
   $("upg-ch-txt").textContent = ch + " %";
   $("upg-ch-val").textContent = ch + " %";
-  $("upg-mult").textContent = "награда x" + (100 / ch).toFixed(2).replace(".", ",");
-  $("upg-win").textContent = fmt(Math.floor(readAmount("upg-amount") * 100 / ch));
+  var k = 100 * (1 - upgEdge) / ch;
+  $("upg-mult").textContent = "награда x" + k.toFixed(2).replace(".", ",");
+  $("upg-win").textContent = fmt(Math.floor(readAmount("upg-amount") * k));
   $("upg-chance").style.background = "linear-gradient(90deg,#ffb86b,#ff6bd6) 0 / " + ((ch - 1) / 79 * 100) + "% 100% no-repeat, rgba(255,255,255,.12)";
 }
 $("upg-chance").addEventListener("input", updUpg);

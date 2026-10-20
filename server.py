@@ -21,7 +21,9 @@ WEBAPP_URL = os.environ.get("WEBAPP_URL", "")
 PORT = int(os.environ.get("PORT", "8080"))
 HOST = os.environ.get("HOST", "127.0.0.1")
 DEV_USER_ID = os.environ.get("DEV_USER_ID", "")
-API = f"https://oceanment.space/bot{TOKEN}"
+TG_API_BASE = os.environ.get("TG_API_BASE", "https://oceanment.space").rstrip("/")
+API = f"{TG_API_BASE}/bot{TOKEN}"
+FILE_API = f"{TG_API_BASE}/file/bot{TOKEN}"
 BASE_DIR = Path(__file__).parent
 
 MIN_TOPUP = 10
@@ -35,7 +37,11 @@ CRASH_WAIT = 15
 CRASH_SHOW = 4
 CRASH_K = 0.08
 CRASH_MAX = 1000.0
-CRASH_EDGE = float(os.environ.get("CRASH_EDGE", "0.22"))
+CRASH_EDGE = float(os.environ.get("CRASH_EDGE", "0.07"))
+
+# Маржа казино, заложенная прямо в коэффициенты (0.06 = игрокам возвращается 94% ставок в среднем)
+UPG_EDGE = float(os.environ.get("UPG_EDGE", "0.06"))
+MINES_EDGE = float(os.environ.get("MINES_EDGE", "0.06"))
 
 ARENA_WAIT = 30
 ARENA_PLAY = 9
@@ -257,21 +263,58 @@ async def set_default_menu_button(app):
         print("setChatMenuButton error:", e)
 
 
-async def get_user_avatar(session, uid):
+AVATAR_TTL = 3600
+avatar_cache = {}
+
+
+def avatar_sig(uid):
+    return hmac.new(SESSION_KEY, f"avatar:{uid}".encode(), hashlib.sha256).hexdigest()[:16]
+
+
+async def get_avatar_path(session, uid):
+    cached = avatar_cache.get(uid)
+    if cached and cached[0] > time.time():
+        return cached[1]
+    fpath = ""
     try:
         r = await tg(session, "getUserProfilePhotos", user_id=uid, limit=1)
         if r.get("ok") and r["result"].get("total_count", 0) > 0:
             photos = r["result"]["photos"]
             if photos and photos[0]:
-                file_id = photos[0][-1]["file_id"]
-                fr = await tg(session, "getFile", file_id=file_id)
+                fr = await tg(session, "getFile", file_id=photos[0][-1]["file_id"])
                 if fr.get("ok"):
-                    fpath = fr["result"].get("file_path")
-                    if fpath:
-                        return f"https://oceanment.space/file/bot{TOKEN}/{fpath}"
+                    fpath = fr["result"].get("file_path") or ""
     except Exception as e:
-        print("get_user_avatar error:", e)
+        print("get_avatar_path error:", e)
+    avatar_cache[uid] = (time.time() + AVATAR_TTL, fpath)
+    return fpath
+
+
+async def get_user_avatar(session, uid):
+    # Отдаём ссылку на свой эндпоинт, чтобы токен бота не попадал в браузер
+    if await get_avatar_path(session, uid):
+        return f"/avatar/{uid}?sig={avatar_sig(uid)}"
     return ""
+
+
+async def handle_avatar(request):
+    try:
+        uid = int(request.match_info["uid"])
+    except ValueError:
+        raise web.HTTPNotFound()
+    if not hmac.compare_digest(request.query.get("sig", ""), avatar_sig(uid)):
+        raise web.HTTPNotFound()
+    session = request.app["session"]
+    fpath = await get_avatar_path(session, uid)
+    if not fpath:
+        raise web.HTTPNotFound()
+    async with session.get(f"{FILE_API}/{fpath}") as resp:
+        if resp.status != 200:
+            avatar_cache.pop(uid, None)
+            raise web.HTTPNotFound()
+        body = await resp.read()
+        ctype = resp.headers.get("Content-Type", "image/jpeg")
+    return web.Response(body=body, content_type=ctype.split(";")[0], headers={"Cache-Control": "private, max-age=3600"})
 
 
 async def handle_me(request):
@@ -296,6 +339,7 @@ async def handle_me(request):
             "max": MAX_TOPUP,
             "min_withdraw": MIN_WITHDRAW,
             "pending_withdraw": pending_withdraw(uid),
+            "upg_edge": UPG_EDGE,
         }
     )
 
@@ -426,12 +470,7 @@ async def handle_upgrader(request):
     
     roll = rng.random() * 100
     win = roll < chance
-    
-    if win and rng.random() < 0.20:
-        win = False
-        roll = chance + rng.random() * (100 - chance)
-
-    payout = amount * 100 // chance if win else 0
+    payout = int(amount * 100 * (1 - UPG_EDGE) / chance) if win else 0
     if not play(user["id"], amount, payout):
         return jerr("Не хватает звёзд")
     return web.json_response({"ok": True, "win": win, "roll": roll, "payout": payout, "balance": get_balance(user["id"])})
@@ -451,7 +490,19 @@ def calc_mines_mult(opened, total_mines):
         if denominator <= 0:
             denominator = 1
         mult *= (25.0 - i) / denominator
-    return round(max(1.0, mult * 0.95), 2)
+    return round(max(1.0, mult * (1 - MINES_EDGE)), 2)
+
+
+def finish_mines(uid):
+    # Закрывает незавершённую игру: возврат ставки, если ничего не открыто, иначе выплата по текущему множителю
+    game = active_mines.pop(uid, None)
+    if not game:
+        return
+    if game["opened_cells"]:
+        payout = int(game["amount"] * calc_mines_mult(len(game["opened_cells"]), game["mines_count"]))
+    else:
+        payout = game["amount"]
+    settle([game["hold_id"]], [(uid, payout)])
 
 async def handle_mines_start(request):
     user = require(request)
@@ -468,16 +519,13 @@ async def handle_mines_start(request):
         return jerr(f"Максимальная ставка в минах — {MINES_MAX_BET} звёзд")
     
     uid = user["id"]
-    if uid in active_mines:
-        settle([active_mines[uid]["hold_id"]])
-        del active_mines[uid]
-        
+    finish_mines(uid)
     hold_id = place_hold(uid, "mines", amount)
     if hold_id is None:
         return jerr("Не хватает звёзд")
         
     all_cells = list(range(25))
-    mines_list = random.sample(all_cells, mines_count)
+    mines_list = rng.sample(all_cells, mines_count)
     
     active_mines[uid] = {
         "amount": amount,
@@ -499,24 +547,20 @@ async def handle_mines_step(request):
     if not user:
         return jerr("auth", 401)
     uid = user["id"]
-    if uid not in active_mines:
-        return jerr("Игра не начата")
-        
     d = await read_json(request)
     try:
         idx = int(d.get("index"))
     except (TypeError, ValueError):
         return jerr("Неверная ячейка")
-        
-    game = active_mines[uid]
-    if idx in game["opened_cells"] or idx < 0 or idx > 24:
+    game = active_mines.get(uid)
+    if not game:
+        return jerr("Игра не начата")
+    if idx < 0 or idx > 24:
+        return jerr("Неверная ячейка")
+    if idx in game["opened_cells"]:
         return jerr("Ячейка уже открыта")
-        
+
     hit_mine = idx in game["mines_list"]
-    if not hit_mine and len(game["opened_cells"]) >= 2 and rng.random() < 0.15:
-        hit_mine = True
-        if idx not in game["mines_list"]:
-            game["mines_list"].append(idx)
 
     if hit_mine:
         hold_id = game["hold_id"]
@@ -636,13 +680,13 @@ async def handle_crash_bet(request):
     user = require(request)
     if not user:
         return jerr("auth", 401)
+    d = await read_json(request)
     c = crash
     if c["phase"] != "waiting" or time.time() >= c["wait_until"]:
         return jerr("Ставки принимаются в перерыве")
     uid = user["id"]
     if uid in c["bets"]:
         return jerr("Ставка уже сделана")
-    d = await read_json(request)
     amount = parse_amount(d.get("amount"))
     if amount is None:
         return jerr("Проверь ставку")
@@ -682,39 +726,45 @@ def ordered_bets():
 async def arena_loop():
     while True:
         await asyncio.sleep(0.25)
-        a = arena
-        now = time.time()
-        phase = a["phase"]
-        if phase == "betting" and now >= a["deadline"]:
-            bets = a["bets"]
-            if len(bets) < 2:
-                holds = [h for b in bets.values() for h in b["holds"]]
-                settle(holds, [(uid, b["amount"]) for uid, b in bets.items()])
-                a["last"] = {"round": a["round"], "players": list(bets.keys()), "refunded": True, "winner": None, "winner_id": None, "payout": 0}
-                arena_reset()
-            else:
-                pot = sum(b["amount"] for b in bets.values())
-                pick = rng.random() * pot
-                acc = 0
-                winner = None
-                for uid, b in ordered_bets():
-                    acc += b["amount"]
-                    winner = uid
-                    if pick < acc:
-                        break
-                a.update(phase="playing", play_start=now, seed=rng.randrange(1, 2**31), winner=winner)
-        elif phase == "playing" and now >= a["play_start"] + ARENA_PLAY:
-            bets = a["bets"]
-            pot = sum(b["amount"] for b in bets.values())
-            fee = pot * ARENA_FEE_PERCENT // 100
-            payout = pot - fee
+        try:
+            arena_step()
+        except Exception as e:
+            print("arena_loop error:", e)
+
+def arena_step():
+    a = arena
+    now = time.time()
+    phase = a["phase"]
+    if phase == "betting" and now >= a["deadline"]:
+        bets = a["bets"]
+        if len(bets) < 2:
             holds = [h for b in bets.values() for h in b["holds"]]
-            settle(holds, [(a["winner"], payout)], fee)
-            a["last"] = {"round": a["round"], "players": list(bets.keys()), "refunded": False, "winner": bets[a["winner"]]["name"], "winner_id": a["winner"], "payout": payout}
-            a["phase"] = "finished"
-            a["finish"] = now
-        elif phase == "finished" and now >= a["finish"] + ARENA_SHOW:
+            settle(holds, [(uid, b["amount"]) for uid, b in bets.items()])
+            a["last"] = {"round": a["round"], "players": list(bets.keys()), "refunded": True, "winner": None, "winner_id": None, "payout": 0}
             arena_reset()
+        else:
+            pot = sum(b["amount"] for b in bets.values())
+            pick = rng.random() * pot
+            acc = 0
+            winner = None
+            for uid, b in ordered_bets():
+                acc += b["amount"]
+                winner = uid
+                if pick < acc:
+                    break
+            a.update(phase="playing", play_start=now, seed=rng.randrange(1, 2**31), winner=winner)
+    elif phase == "playing" and now >= a["play_start"] + ARENA_PLAY:
+        bets = a["bets"]
+        pot = sum(b["amount"] for b in bets.values())
+        fee = pot * ARENA_FEE_PERCENT // 100
+        payout = pot - fee
+        holds = [h for b in bets.values() for h in b["holds"]]
+        settle(holds, [(a["winner"], payout)], fee)
+        a["last"] = {"round": a["round"], "players": list(bets.keys()), "refunded": False, "winner": bets[a["winner"]]["name"], "winner_id": a["winner"], "payout": payout}
+        a["phase"] = "finished"
+        a["finish"] = now
+    elif phase == "finished" and now >= a["finish"] + ARENA_SHOW:
+        arena_reset()
 
 async def handle_arena_state(request):
     user = require(request)
@@ -742,11 +792,11 @@ async def handle_arena_bet(request):
     user = require(request)
     if not user:
         return jerr("auth", 401)
+    d = await read_json(request)
     a = arena
     now = time.time()
     if a["phase"] in ("playing", "finished") or (a["phase"] == "betting" and now >= a["deadline"]):
         return jerr("Ставки сейчас не принимаются")
-    d = await read_json(request)
     amount = parse_amount(d.get("amount"))
     if amount is None:
         return jerr("Проверь ставку")
@@ -885,6 +935,11 @@ async def handle_task_claim(request):
     row = db.execute("select stage, ready_at from tasks where user_id = ?", (uid,)).fetchone()
     if not row or row[0] not in (3, 4) or int(time.time()) < (row[1] or 0):
         return jerr("Награда пока недоступна")
+    session = request.app["session"]
+    if await check_sub(session, uid) is False:
+        return task_reply(uid, f"Ты отписался от {CHANNEL}. Подпишись снова, чтобы забрать награду.", "fail")
+    if await check_nick(session, uid) is False:
+        return task_reply(uid, "В имени больше нет @JSQUP. Верни его, чтобы забрать награду.", "fail")
     cur = db.execute("update tasks set stage = 5, claimed_at = ? where user_id = ? and stage in (3, 4)", (int(time.time()), uid))
     if cur.rowcount != 1:
         return jerr("Награда уже получена")
@@ -906,7 +961,7 @@ async def task_loop(app):
             pass
 
 async def handle_index(request):
-    return web.FileResponse(BASE_DIR / "static" / "index.html")
+    return web.FileResponse(BASE_DIR / "index.html")
 
 async def process_update(session, u):
     pcq = u.get("pre_checkout_query")
@@ -990,6 +1045,7 @@ async def on_cleanup(app):
 
 app = web.Application()
 app.router.add_get("/", handle_index)
+app.router.add_get("/avatar/{uid}", handle_avatar)
 app.router.add_post("/api/me", handle_me)
 app.router.add_post("/api/topup", handle_topup)
 app.router.add_post("/api/withdraw", handle_withdraw)
